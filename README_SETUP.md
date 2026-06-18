@@ -37,7 +37,7 @@ pip install fastapi uvicorn pydantic python-multipart requests psutil huggingfac
 
 ---
 
-## Step 2: Install Hardware Acceleration
+## Step 3: Install Hardware Acceleration
 
 Run the specific block below that matches your computer's hardware to enable GPU execution.
 
@@ -77,19 +77,9 @@ pip install llama-cpp-python
 
 ---
 
-## Step 3: Run the System
+## Step 4: Download Models & Start the System
 
-Once installed, download the models and start the server:
-
-```bash
-# 1. Run the downloader to fetch the quantized models (~15GB total)
-python -m backend.downloader
-
-# 2. Start the Backend server
-python -m backend.app
-
-# 3. Open a new terminal and start the Frontend
-cd frontend
-npm install
-npm run dev
-```
+Once all dependencies are installed, head to **[STARTUP.md](./STARTUP.md)** for:
+- How to download the AI model weights (~18 GB)
+- How to start the backend and frontend on Ubuntu, Mac, and Windows
+- Troubleshooting common errors
