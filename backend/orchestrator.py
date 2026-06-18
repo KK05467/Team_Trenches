@@ -279,37 +279,23 @@ class AgentOrchestrator:
         """Load a model with Dynamic Memory Allocator protection and dynamic context sizing."""
         if required_ctx is None:
             required_ctx = self.context_length if self.context_length > 0 else 8192
-        # Floor: never load a model below 8192 ctx — avoids reload-on-expand segfaults on Intel XPU
-        required_ctx = max(8192, required_ctx)
 
         if model_key in self.loaded_models:
             model_obj = self.loaded_models[model_key]
-            # Context expansion – safe path for Intel XPU (Level‑Zero)
+            # Context expansion — safe reload on all platforms (including Intel iGPU/Vulkan)
             if hasattr(model_obj, "n_ctx") and required_ctx > model_obj.n_ctx():
-                # Detect Intel XPU environment
-                is_xpu = False
-                try:
-                    if torch and hasattr(torch, "xpu") and torch.xpu.is_available():
-                        is_xpu = True
-                except Exception:
-                    pass
-                if is_xpu:
-                    print(f"⚠️ Skipping context expansion for '{model_key}' on Intel XPU (current: {model_obj.n_ctx()}, requested: {required_ctx})")
-                    # No reload – keep current model; the larger context request will be capped later
-                else:
-                    # Non‑XPU path – safe reload with delay and cache clear
-                    print(f"🔄 Reloading '{model_key}' to expand context: {model_obj.n_ctx()} -> {required_ctx}")
-                    if hasattr(model_obj, 'close'):
-                        try:
-                            model_obj.close()
-                        except Exception:
-                            pass
-                    del self.loaded_models[model_key]
-                    gc.collect()
-                    import time
-                    time.sleep(1.5)
-                    if torch and hasattr(torch, "xpu") and torch.xpu.is_available():
-                        torch.xpu.empty_cache()
+                print(f"🔄 Reloading '{model_key}' to expand context: {model_obj.n_ctx()} -> {required_ctx}")
+                if hasattr(model_obj, 'close'):
+                    try:
+                        model_obj.close()
+                    except Exception:
+                        pass
+                del self.loaded_models[model_key]
+                gc.collect()
+                import time
+                time.sleep(2)
+                if torch and hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
             else:
                 self._touch_model(model_key)
                 return model_obj
@@ -665,8 +651,8 @@ class AgentOrchestrator:
         # ── Dynamic Context Sizing ───────────────────────────────────────
         est_tokens = len(enriched_prompt) // 4
         if self.context_length == 0:
-            router_ctx = max(8192, min(64000, est_tokens + self.max_tokens))
-            ds_ctx = max(8192, min(64000, est_tokens + self.max_tokens))
+            router_ctx = min(64000, est_tokens + self.max_tokens)
+            ds_ctx = min(64000, est_tokens + self.max_tokens)
             oc_ctx = 8192
         else:
             router_ctx = self.context_length
