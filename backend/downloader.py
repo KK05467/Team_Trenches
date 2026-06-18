@@ -12,7 +12,7 @@ MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mode
 # Categorized into 'text' and 'image_to_text' subfolders.
 MODEL_DEFINITIONS = {
     'qwen_vl': {
-        'repo_id': 'Qwen/Qwen2.5-VL-7B-Instruct',
+        'repo_id': 'unsloth/Qwen2.5-VL-7B-Instruct-GGUF',
         'filename': 'Qwen2.5-VL-7B-Instruct-UD-Q6_K_XL.gguf',
         'name': 'Qwen-2.5-VL-7B (Vision/Doc Parsing)',
         'type': 'image_to_text',
@@ -25,7 +25,7 @@ MODEL_DEFINITIONS = {
     },
     'deepseek_r1': {
         'repo_id': 'unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF',
-        'filename': 'DeepSeek-R1-Distill-Qwen-7B-Q6_K_L.gguf',
+        'filename': 'DeepSeek-R1-Distill-Qwen-7B-Q6_K.gguf',
         'name': 'DeepSeek-R1-7B (Reasoning Engine)',
         'type': 'text',
     },
@@ -36,7 +36,7 @@ MODEL_DEFINITIONS = {
         'type': 'text',
     },
     'opencode': {
-        'repo_id': 'TheBloke/OpenCodeInterpreter-DS-6.7B-GGUF',
+        'repo_id': 'MaziyarPanahi/OpenCodeInterpreter-DS-6.7B-GGUF',
         'filename': 'OpenCodeInterpreter-DS-6.7B.Q6_K.gguf',
         'name': 'OpenCodeInterpreter 6.7B (3D Visualization Layer)',
         'type': 'text',

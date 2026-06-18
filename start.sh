@@ -7,6 +7,10 @@ echo "============================================="
 echo "   Starting DeepThinker Multi-Agent Hub...   "
 echo "============================================="
 
+# Intel Iris Xe iGPU environment
+export SYCL_DEVICE_FILTER=level_zero
+export IPEX_OPTIMIZE_TRANSFORMERS=1
+
 # Sourcing compiler variables if Intel environment exists
 if [ -f "/opt/intel/oneapi/compiler/latest/env/vars.sh" ]; then
     echo "Sourcing Intel oneAPI Compiler environment variables..."

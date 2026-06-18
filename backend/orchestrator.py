@@ -296,6 +296,21 @@ class AgentOrchestrator:
         # DMA Check: evict if memory is low BEFORE attempting a new load
         self._check_memory_pressure()
 
+        # ── iGPU Unified Memory Guard ─────────────────────────────────────
+        # On Intel Iris Xe (and similar iGPUs), RAM IS VRAM. Loading two 7B
+        # models simultaneously causes glibc heap corruption ('corrupted size
+        # vs. prev_size') because llama.cpp does one giant contiguous malloc.
+        # Fix: if we are on an iGPU (no discrete CUDA GPU), proactively evict
+        # the least-recently-used model before loading a new heavy one.
+        is_igpu = not (torch and torch.cuda.is_available())
+        if is_igpu and self.loaded_models:
+            # Estimate: 7B Q6_K models need ~6 GB, 1.5B need ~1.4 GB
+            # If we already have a 7B loaded, evict it first
+            free_ram = self._get_ram_free_gb()
+            if free_ram < self.total_ram_gb * 0.35:  # Less than 35% RAM free
+                print(f"🧠 DMA (iGPU Guard): Pre-emptive eviction — only {free_ram:.1f} GB free")
+                self._evict_lru_model()
+
         if not is_model_downloaded(model_key):
             raise Exception(f"Model '{model_key}' is not downloaded. "
                             f"Place the weights in models/ and restart.")
@@ -684,16 +699,13 @@ class AgentOrchestrator:
         lessons = ""
         all_errors = []
 
-        # ── Pre-load models ONCE (not inside the loop) ────────────────────
-        ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
-        vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
-
         for reset in range(max_resets):
             # ── Phase 1: DeepSeek Logic Plan ─────────────────────────────
             if status_callback:
                 lbl = f"Nuclear Reset #{reset}: Rewriting..." if reset else "DeepSeek-R1 drafting logic..."
                 status_callback(lbl, "info" if not reset else "warning", "deepseek_r1", 20)
 
+            ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
             plan_p = f"Create a step-by-step logic plan:\n{ds_safe}"
             if lessons:
                 plan_p += f"\n\nLESSONS FROM PREVIOUS FAILURES:\n{lessons}"
@@ -707,6 +719,7 @@ class AgentOrchestrator:
             if not verified:
                 if status_callback:
                     status_callback("Logic failed. VibeThinker intervening...", "warning", "vibethinker", 35)
+                vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
                 fix_p = (
                     f"Logic plan FAILED verification.\nPlan:\n{ds_draft[:2000]}\n"
                     f"Error:\n{pg_out[:1000]}\nRewrite a corrected logic plan."
@@ -726,6 +739,7 @@ class AgentOrchestrator:
             # ── Phase 3: VibeThinker — Write Code ────────────────────────
             if status_callback:
                 status_callback("VibeThinker writing code...", "info", "vibethinker", 50)
+            vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
             code_p = f"Write a complete Python script for this plan:\n{compiled_plan}\n\nWrap in ```python```."
             code = Sandbox.extract_code(self._strip_thinking(self._call_model(vibe_llm, code_p, gen_tokens, gen_temp)))
 
