@@ -320,4 +320,4 @@ Team_Trenches/
 
 ## 📄 License
 
-GNU General Public License v3.0 (GPLv3) — see [LICENSE](./LICENSE) for details.
+GNU Affero General Public License v3.0 (AGPLv3) — see [LICENSE](./LICENSE) for details.
