@@ -426,7 +426,7 @@ class AgentOrchestrator:
         return cleaned.strip()
 
 
-    def _crunch_prompt(self, prompt, target_model, max_tokens_limit, status_callback=None):
+    def _crunch_prompt(self, prompt, target_model, max_tokens_limit, status_callback=None, router_llm=None):
         """Compresses a massive prompt safely using the fast Router model."""
         # Guard: if ctx is smaller than generation headroom, don't try to compress
         max_tokens_limit = max(512, max_tokens_limit)
@@ -450,8 +450,9 @@ class AgentOrchestrator:
             
         compress_prompt = f"Summarize this middle section concisely. Keep all logic, facts, and code structure intact:\n{middle_chunk}"
         
-        # Temporarily get router with fixed small context for the summarization
-        router_llm = self._get_model("router", required_ctx=8192)
+        # Reuse pre-loaded router if available, otherwise load it
+        if router_llm is None:
+            router_llm = self._get_model("router", required_ctx=8192)
         if isinstance(router_llm, TransformerWrapper):
             middle_summary = router_llm(compress_prompt, max_tokens=1024)
         else:
@@ -678,7 +679,7 @@ class AgentOrchestrator:
         if task_type == "SIMPLE":
             if status_callback:
                 status_callback("Answering directly...", "success", "router", 100)
-            safe = self._crunch_prompt(enriched_prompt, "router", router_ctx - self.max_tokens, status_callback)
+            safe = self._crunch_prompt(enriched_prompt, "router", router_ctx - self.max_tokens, status_callback, router_llm=router_llm)
             return self._call_model(router_llm, safe, max_tokens=self.max_tokens, temperature=0.6)
 
         # ══════════════════════════════════════════════════════════════════

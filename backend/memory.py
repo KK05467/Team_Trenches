@@ -29,22 +29,21 @@ class Memory:
 
     def _init_sqlite(self):
         """Initialize local SQLite database for structured data and embedding storage."""
-        conn = sqlite3.connect(self.sqlite_path)
-        cursor = conn.cursor()
-        
-        # Table for storing experiences (tasks, solutions, mistakes)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id TEXT PRIMARY KEY,
-                task TEXT,
-                doc TEXT,
-                metadata TEXT,
-                embedding TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.sqlite_path) as conn:
+            cursor = conn.cursor()
+            
+            # Table for storing experiences (tasks, solutions, mistakes)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY,
+                    task TEXT,
+                    doc TEXT,
+                    metadata TEXT,
+                    embedding BLOB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
 
     def count(self):
         """Returns the number of stored memories."""
@@ -55,11 +54,10 @@ class Memory:
                 pass
         
         # SQLite count
-        conn = sqlite3.connect(self.sqlite_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM memories")
-        count = cursor.fetchone()[0]
-        conn.close()
+        with sqlite3.connect(self.sqlite_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM memories")
+            count = cursor.fetchone()[0]
         return count
 
     def recall(self, task, n_results=2, embed_fn=None):
@@ -82,11 +80,10 @@ class Memory:
                 print(f"ChromaDB query failed: {str(e)}. Falling back to SQLite recall.")
 
         # SQLite Query Fallback
-        conn = sqlite3.connect(self.sqlite_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, task, doc, embedding FROM memories")
-        rows = cursor.fetchall()
-        conn.close()
+        with sqlite3.connect(self.sqlite_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, task, doc, embedding FROM memories")
+            rows = cursor.fetchall()
 
         if not rows:
             return ""
@@ -95,14 +92,15 @@ class Memory:
         if embed_fn and rows[0][3]:
             try:
                 query_vector = np.array(embed_fn(task))
+                norm_q = np.linalg.norm(query_vector)  # Compute ONCE outside the loop
+                if norm_q == 0:
+                    norm_q = 1e-10  # Avoid division by zero
                 scores = []
-                for mem_id, t_task, doc, emb_str in rows:
-                    if emb_str:
-                        emb = np.array(json.loads(emb_str))
-                        # Compute cosine similarity
-                        norm_q = np.linalg.norm(query_vector)
+                for mem_id, t_task, doc, emb_blob in rows:
+                    if emb_blob:
+                        emb = np.frombuffer(emb_blob, dtype=np.float32)  # Binary decode (fast)
                         norm_e = np.linalg.norm(emb)
-                        if norm_q > 0 and norm_e > 0:
+                        if norm_e > 0:
                             similarity = np.dot(query_vector, emb) / (norm_q * norm_e)
                         else:
                             similarity = 0
@@ -160,11 +158,10 @@ class Memory:
 
     def _is_duplicate(self, task):
         """Check if a very similar task already exists in memory."""
-        conn = sqlite3.connect(self.sqlite_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT task FROM memories")
-        rows = cursor.fetchall()
-        conn.close()
+        with sqlite3.connect(self.sqlite_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT task FROM memories")
+            rows = cursor.fetchall()
 
         # Simple dedup: if >60% of words overlap with an existing task, skip
         task_words = set(task.lower().split())
@@ -211,23 +208,22 @@ class Memory:
             except Exception as e:
                 print(f"Chroma save failed: {str(e)}")
 
-        # Save to SQLite
-        emb_str = ""
+        # Save to SQLite (embeddings stored as binary blobs for fast retrieval)
+        emb_blob = None
         if embed_fn:
             try:
                 emb = embed_fn(task)
-                emb_str = json.dumps(emb)
+                emb_blob = np.array(emb, dtype=np.float32).tobytes()
             except Exception as e:
                 print(f"Embedding generation failed: {str(e)}")
 
-        conn = sqlite3.connect(self.sqlite_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO memories (id, task, doc, metadata, embedding) VALUES (?, ?, ?, ?, ?)",
-            (mem_id, task, doc, json.dumps(meta), emb_str)
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.sqlite_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO memories (id, task, doc, metadata, embedding) VALUES (?, ?, ?, ?, ?)",
+                (mem_id, task, doc, json.dumps(meta), emb_blob)
+            )
+            conn.commit()
 
         return mem_id
 
@@ -261,23 +257,22 @@ class Memory:
             except Exception as e:
                 print(f"Chroma save mistake failed: {str(e)}")
 
-        # Save to SQLite
-        emb_str = ""
+        # Save to SQLite (embeddings stored as binary blobs for fast retrieval)
+        emb_blob = None
         if embed_fn:
             try:
                 emb = embed_fn(task)
-                emb_str = json.dumps(emb)
+                emb_blob = np.array(emb, dtype=np.float32).tobytes()
             except Exception as e:
                 print(f"Embedding generation failed: {str(e)}")
 
-        conn = sqlite3.connect(self.sqlite_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO memories (id, task, doc, metadata, embedding) VALUES (?, ?, ?, ?, ?)",
-            (mem_id, task, doc, json.dumps(meta), emb_str)
-        )
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.sqlite_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO memories (id, task, doc, metadata, embedding) VALUES (?, ?, ?, ?, ?)",
+                (mem_id, task, doc, json.dumps(meta), emb_blob)
+            )
+            conn.commit()
 
         return mem_id
 

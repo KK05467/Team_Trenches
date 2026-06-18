@@ -1,7 +1,7 @@
 import os
 import json
-import urllib.request
 import urllib.parse
+import requests
 from bs4 import BeautifulSoup  # Inherited from system packages if available
 
 class WebSearch:
@@ -10,6 +10,9 @@ class WebSearch:
         self.google_cx = google_cx or os.environ.get("GOOGLE_CX")
         # Default to a reliable public instance if not specified
         self.searxng_url = searxng_url or os.environ.get("SEARXNG_URL", "https://searx.be")
+        # Persistent session for TCP connection pooling (reuses SSL handshakes)
+        self._session = requests.Session()
+        self._session.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"})
 
     def search(self, query, max_results=5):
         """
@@ -31,9 +34,8 @@ class WebSearch:
             safe_query = urllib.parse.quote(query)
             url = f"{self.searxng_url.rstrip('/')}/search?q={safe_query}&format=json"
             
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=5.0) as response:
-                data = json.loads(response.read().decode())
+            response = self._session.get(url, timeout=5.0)
+            data = response.json()
                 
             results = []
             if "results" in data:
@@ -59,9 +61,8 @@ class WebSearch:
             safe_query = urllib.parse.quote(query)
             url = f"https://www.googleapis.com/customsearch/v1?key={self.google_api_key}&cx={self.google_cx}&q={safe_query}&num={max_results}"
             
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode())
+            response = self._session.get(url, timeout=5)
+            data = response.json()
                 
             results = []
             if "items" in data:
@@ -108,15 +109,11 @@ class WebSearch:
     def _ddg_html_scraper(self, query, max_results=5):
         """Scrape DuckDuckGo HTML search page as a robust fallback without library dependencies."""
         try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
-            }
             # DuckDuckGo HTML version is lightweight and scrapeable
             url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-            req = urllib.request.Request(url, headers=headers)
             
-            with urllib.request.urlopen(req, timeout=5.0) as response:
-                html = response.read()
+            response = self._session.get(url, timeout=5.0)
+            html = response.content
                 
             soup = BeautifulSoup(html, "html.parser")
             results = []
