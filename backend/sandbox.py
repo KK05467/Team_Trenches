@@ -541,6 +541,10 @@ class Sandbox:
         Extract code from markdown code blocks in LLM responses.
         Returns (code, language) tuple. Handles ```python, ```c, ```cpp, ```bash, etc.
         """
+        def _sanitize(code_str):
+            # Remove hallucinated Jupyter magic commands that cause SyntaxErrors in pure Python
+            return re.sub(r'^[!%]\s*pip\s+install.*$', '', code_str, flags=re.MULTILINE).strip()
+
         # Try language-specific code blocks first
         lang_patterns = [
             (r"```python\s*(.*?)\s*```", 'python'),
@@ -558,7 +562,7 @@ class Sandbox:
         for pattern, lang in lang_patterns:
             match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
             if match:
-                return match.group(1).strip()
+                return _sanitize(match.group(1))
 
         # Fallback: Match generic ``` <code> ```
         generic_match = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
@@ -567,7 +571,7 @@ class Sandbox:
             first_line = content.split('\n')[0].strip().lower()
             known_tags = ['python', 'py', 'javascript', 'js', 'html', 'css', 'bash', 'sh', 'c', 'cpp', 'c++', 'java']
             if first_line in known_tags:
-                return "\n".join(content.split('\n')[1:]).strip()
-            return content
+                return _sanitize("\n".join(content.split('\n')[1:]))
+            return _sanitize(content)
 
-        return text.strip()
+        return _sanitize(text)
