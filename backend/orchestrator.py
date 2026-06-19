@@ -558,8 +558,8 @@ class AgentOrchestrator:
         """Three-way classification: SIMPLE, CODING, or REASONING."""
         p = (
             "Classify this query into EXACTLY ONE category. Reply with ONLY the category name.\n\n"
-            "SIMPLE — Quick factual answers, greetings, definitions, translations, yes/no questions.\n"
-            "  Examples: 'What is the capital of France?', 'Hi how are you?', 'Define entropy', 'Translate hello to Spanish'\n\n"
+            "SIMPLE — Quick factual answers, greetings, definitions, translations, yes/no questions, fetching latest news/weather/facts.\n"
+            "  Examples: 'What is the capital of France?', 'Hi how are you?', 'Define entropy', 'Translate hello to Spanish', 'fetch latest weather news'\n\n"
             "CODING — Anything that needs writing, fixing, debugging, or executing code in ANY language.\n"
             "  Examples: 'Write a Python sort', 'Fix this code', 'Write C code for linked list',\n"
             "  'Create a script to...', 'Debug this error', 'Build a calculator', 'Implement binary search'\n"
@@ -572,12 +572,24 @@ class AgentOrchestrator:
             "IMPORTANT RULES:\n"
             "- If the query asks to EXPLAIN something AND write code → CODING\n"
             "- If the query asks for detailed explanation with visualization → REASONING\n"
+            "- If the query simply asks to 'fetch', 'get', 'search', or 'scrape' weather, news, or facts from the web without asking to write programming code → SIMPLE or REASONING, NOT CODING.\n"
             "- If unsure between SIMPLE and REASONING → choose REASONING\n"
             "- If unsure between CODING and REASONING → choose CODING\n\n"
             f"Query: {prompt[:500]}\n\nCategory:"
         )
         result = self._call_model(router_llm, p, max_tokens=10, temperature=0.1)
         upper = str(result).strip().upper()
+        
+        # Override classification if the intent is purely search/weather/news and doesn't ask to create code
+        prompt_lower = prompt.lower()
+        search_intents = ["fetch from web", "search the web", "search for", "google for", "latest news", "weather news", "current weather", "weather of"]
+        has_code_intent = any(kw in prompt_lower for kw in ["write code", "write a code", "javascript code", "python code", "c++ code", "java code", "html code", "css code", "write a script", "code for", "script to"])
+        
+        if any(intent in prompt_lower for intent in search_intents) and not has_code_intent:
+            if "REASONING" in upper:
+                return "REASONING"
+            return "SIMPLE"
+
         # Strict keyword extraction from model response
         if "CODING" in upper:
             return "CODING"
@@ -585,8 +597,8 @@ class AgentOrchestrator:
             return "REASONING"
         if "SIMPLE" in upper:
             return "SIMPLE"
+            
         # Fallback: keyword scan on the original prompt for safety
-        prompt_lower = prompt.lower()
         code_keywords = ["write code", "write a code", "fix code", "debug", "script", "implement", "program", "compile", "function(", "def ", "class ", "import "]
         reason_keywords = ["explain", "prove", "derive", "why ", "how does", "in detail", "theory", "analyze", "compare", "solve"]
         if any(kw in prompt_lower for kw in code_keywords):
