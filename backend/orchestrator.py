@@ -124,8 +124,19 @@ class AgentOrchestrator:
         # 16 GB → keep 4.0 GB free  (12 GB usable)
         # 32 GB → keep 8.0 GB free  (24 GB usable)
         self.ram_safety_gb = round(self.total_ram_gb * 0.25, 1)
-        # VRAM safety: keep 2 GB free per GPU (only matters for discrete GPUs)
+        # VRAM safety: on NVIDIA dGPUs, reserve 40% of VRAM so the DMA evicts
+        # old models *before* a new 5-7 GB model load crashes with OOM.
+        # On iGPUs (Intel/AMD shared memory), VRAM = RAM so this doesn't apply.
         self.vram_safety_gb = 2.0
+        if torch and torch.cuda.is_available():
+            try:
+                _free, total_vram = torch.cuda.mem_get_info(0)
+                total_vram_gb = total_vram / (1024 ** 3)
+                self.vram_safety_gb = round(total_vram_gb * 0.40, 1)  # 40% reserve
+                print(f"🎮 DMA: NVIDIA GPU detected — {total_vram_gb:.0f} GB VRAM, "
+                      f"evict threshold = {self.vram_safety_gb:.1f} GB free")
+            except Exception:
+                pass
         print(f"🧠 DMA: Detected {self.total_ram_gb:.0f} GB RAM → "
               f"Safety threshold = {self.ram_safety_gb:.1f} GB "
               f"(evict when free < {self.ram_safety_gb:.1f} GB)")
