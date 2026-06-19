@@ -761,20 +761,22 @@ class AgentOrchestrator:
         if status_callback:
             status_callback("Generating HTML Artifact (Frontend Sandbox)...", "info", "opencode", 95)
         html_prompt = (
-            "You are a JavaScript visualization expert. "
-            "Write a COMPLETE, SELF-CONTAINED HTML page that creates an interactive 3D visualization.\n"
+            "You are a JavaScript WebGL and Three.js visualization expert. "
+            "Write a COMPLETE, SELF-CONTAINED HTML page that creates a premium, interactive 3D physics simulation.\n"
             "RULES:\n"
-            "1. Use a single HTML file with inline <script> and <style> tags\n"
-            "2. Load Plotly.js from CDN: <script src='https://cdn.plot.ly/plotly-2.27.0.min.js'></script>\n"
-            "3. Use dark theme: body background #0d0d0d, text color #e0e0e0\n"
-            "4. The chart div MUST have id='chart' and fill the entire viewport\n"
-            "5. Use Plotly.newPlot('chart', data, layout) to render\n"
-            "6. Set layout paper_bgcolor to '#0d0d0d', plot_bgcolor to '#0d0d0d', and font: {color: '#e0e0e0'}\n"
-            "7. Make it responsive with {responsive: true}\n"
-            "8. Always use a colorscale (e.g., 'Viridis' or 'Plasma') for surface/scatter plots so they are visible.\n"
-            "9. Do NOT use any external frameworks or libraries besides Plotly.js. However, if you must use Three.js for dynamic physics/orbital animations, make sure to load OrbitControls correctly, NEVER use non-existent APIs like ArcGeometry (use RingGeometry, TorusGeometry, or custom curves), and always define all animation variables (like clock/time/frameCount).\n"
-            "10. Include ALL math/data generation directly in JavaScript\n\n"
-            "Output the COMPLETE HTML page inside ```html``` blocks.\n\n"
+            "1. Use a single HTML file with inline <script> and <style> tags.\n"
+            "2. Load Three.js (r128) and OrbitControls from CDN:\n"
+            "   <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script>\n"
+            "   <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>\n"
+            "3. Use a sleek dark space/scientific theme: body background '#0d0d0d', text color '#e0e0e0'.\n"
+            "4. Include interactive glassmorphic UI controls (like range sliders to change mass ratio, orbital speed, eccentricity, and play/pause buttons) at the bottom or corner with CSS: background: rgba(30, 30, 30, 0.65), backdrop-filter: blur(10px), border: 1px solid rgba(255,255,255,0.1), padding: 15px, border-radius: 10px, color: white.\n"
+            "5. To make it great for understanding, you MUST:\n"
+            "   - Render a glowing marker at the exact Center of Mass (Barycenter).\n"
+            "   - Draw lines/connections from the barycenter to each body.\n"
+            "   - Display real-time data labels (e.g. current positions, velocities, or mass ratios) updating on-screen.\n"
+            "6. Make sure to use only VALID Three.js APIs: NEVER use non-existent APIs like ArcGeometry (use RingGeometry, TorusGeometry, or custom BufferGeometry curves for paths). Always instantiate THREE.OrbitControls(camera, renderer.domElement).\n"
+            "7. Define all animation variables (like clock/time/frameCount) at the top of your script scope so they are never undefined.\n"
+            "8. Output the COMPLETE HTML page inside ```html``` blocks.\n\n"
             f"Topic: {compiled_plan[:3000]}"
         )
         html_code = self._call_model(coder_llm, html_prompt, max_tokens=gen_tokens, temperature=gen_temp)
@@ -1143,13 +1145,13 @@ class AgentOrchestrator:
                         status_callback("VibeThinker's correction VERIFIED!", "success", "vibethinker", 80)
                     router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
                     viz = self._check_3d_gate(prompt, vibe_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-                    return f"### Verified Answer\n{vibe_answer}{viz}"
+                    return f"{vibe_answer}{viz}"
                 ds_safe = f"{ds_safe}\n\nPrevious errors: {pg_out[:500]}"
 
             # Exhausted playground rounds — return best effort
             router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
             viz = self._check_3d_gate(prompt, ds_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-            return f"### Answer (Best Effort)\n{ds_answer}{viz}"
+            return f"{ds_answer}{viz}"
 
         else:
             # ── Standard LLM Debate (non-testable reasoning) ─────────────
@@ -1158,16 +1160,18 @@ class AgentOrchestrator:
             ds_draft = self._strip_thinking(self._call_model(ds_llm, f"Provide a detailed answer:\n{ds_safe}", gen_tokens, gen_temp))
 
             if status_callback:
-                status_callback("VibeThinker critiquing...", "info", "vibethinker", 50)
+                status_callback("VibeThinker refining answer...", "info", "vibethinker", 50)
             vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
             vibe_critique = self._strip_thinking(self._call_model(
-                vibe_llm, f"Critique and refine:\n{ds_draft}", gen_tokens, gen_temp
+                vibe_llm, 
+                f"You are a helpful assistant. Integrate any improvements and rewrite this draft into a single, polished, and cohesive final response. Do NOT include any meta-commentary, intros, or critique headings. Output only the final response:\n{ds_draft}", 
+                gen_tokens, gen_temp
             ))
 
-            compiled = f"{ds_draft}\n\nRefinements:\n{vibe_critique}"
+            compiled = vibe_critique
             router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
             viz = self._check_3d_gate(prompt, compiled, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
             if status_callback:
                 status_callback("Done!", "success", "router", 100)
-            return f"### Analysis\n{compiled}{viz}"
+            return f"{compiled}{viz}"
 
