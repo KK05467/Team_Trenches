@@ -90,6 +90,12 @@ try:
 except Exception:
     pass  # Non-Linux systems skip resource limits
 
+# ── Step 1.5: Hard Block Network Access ──────────────────────────────────
+import socket
+def block_network(*args, **kwargs):
+    raise PermissionError("Network access is strictly forbidden in the sandbox.")
+socket.socket = block_network
+
 # ── Step 2: Define the Whitelist of Safe Modules ─────────────────────────
 ALLOWED_MODULES = {
     # Math & Science
@@ -549,17 +555,17 @@ class Sandbox:
 
         # 1. Try language-specific closed code blocks first
         lang_patterns = [
-            (r"```html\s*(.*?)\s*```", 'html'),
-            (r"```python\s*(.*?)\s*```", 'python'),
-            (r"```py\s*(.*?)\s*```", 'python'),
-            (r"```c\+\+\s*(.*?)\s*```", 'cpp'),
-            (r"```cpp\s*(.*?)\s*```", 'cpp'),
-            (r"```c\s*(.*?)\s*```", 'c'),
-            (r"```bash\s*(.*?)\s*```", 'bash'),
-            (r"```sh\s*(.*?)\s*```", 'bash'),
-            (r"```javascript\s*(.*?)\s*```", 'javascript'),
-            (r"```js\s*(.*?)\s*```", 'javascript'),
-            (r"```java\s*(.*?)\s*```", 'java'),
+            (r"```\s*html\s*(.*?)\s*```", 'html'),
+            (r"```\s*python\s*(.*?)\s*```", 'python'),
+            (r"```\s*py\s*(.*?)\s*```", 'python'),
+            (r"```\s*c\+\+\s*(.*?)\s*```", 'cpp'),
+            (r"```\s*cpp\s*(.*?)\s*```", 'cpp'),
+            (r"```\s*c\s*(.*?)\s*```", 'c'),
+            (r"```\s*bash\s*(.*?)\s*```", 'bash'),
+            (r"```\s*sh\s*(.*?)\s*```", 'bash'),
+            (r"```\s*javascript\s*(.*?)\s*```", 'javascript'),
+            (r"```\s*js\s*(.*?)\s*```", 'javascript'),
+            (r"```\s*java\s*(.*?)\s*```", 'java'),
         ]
 
         for pattern, lang in lang_patterns:

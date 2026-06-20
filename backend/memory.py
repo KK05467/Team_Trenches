@@ -75,6 +75,9 @@ class Memory:
                 results = self.collection.query(query_texts=[task], n_results=n_results)
                 if results and results.get('documents') and results['documents'][0]:
                     memories = "\n---\n".join(results['documents'][0])
+                    # Limit memory injection to prevent Context Window OOM
+                    if len(memories) > 2000:
+                        memories = memories[:2000] + "\n... [TRUNCATED]"
                     return f"\n\nRelevant past experience:\n{memories}\n"
             except Exception as e:
                 print(f"ChromaDB query failed: {str(e)}. Falling back to SQLite recall.")
@@ -111,6 +114,9 @@ class Memory:
                 top_docs = [doc for score, doc in scores[:n_results] if score > 0.4] # threshold
                 if top_docs:
                     memories = "\n---\n".join(top_docs)
+                    # Limit memory injection to prevent Context Window OOM
+                    if len(memories) > 2000:
+                        memories = memories[:2000] + "\n... [TRUNCATED]"
                     return f"\n\nRelevant past experience:\n{memories}\n"
             except Exception as e:
                 print(f"SQLite vector similarity search failed: {str(e)}")
@@ -152,6 +158,9 @@ class Memory:
             keyword_scores.sort(key=lambda x: x[0], reverse=True)
             top_docs = [doc for score, doc in keyword_scores[:n_results]]
             memories = "\n---\n".join(top_docs)
+            # Limit memory injection to prevent Context Window OOM
+            if len(memories) > 2000:
+                memories = memories[:2000] + "\n... [TRUNCATED]"
             return f"\n\nRelevant past experience:\n{memories}\n"
             
         return ""
