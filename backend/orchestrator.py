@@ -709,6 +709,11 @@ class AgentOrchestrator:
 
     def _verify_html_javascript(self, html_code):
         """Extract JavaScript from HTML, inject mock environment, and run it in the Node.js sandbox to catch syntax/execution errors."""
+        cleaned = html_code.strip()
+        # Basic sanity check: must look like HTML structure, not raw text refusal/apology
+        if not (cleaned.startswith("<") or "</" in cleaned or "<div" in cleaned.lower() or "<html" in cleaned.lower() or "<script" in cleaned.lower()):
+            return False, "Not a valid HTML document (plain text or refusal detected)."
+
         # Find all script blocks in HTML
         scripts = re.findall(r'<script\b[^>]*>([\s\S]*?)</script>', html_code)
         if not scripts:
@@ -842,22 +847,23 @@ class AgentOrchestrator:
         if status_callback:
             status_callback("Generating HTML Artifact (Frontend Sandbox)...", "info", "opencode", 95)
         html_prompt = (
-            "You are a JavaScript WebGL and Three.js visualization expert. "
-            "Write a COMPLETE, SELF-CONTAINED HTML page that creates a premium, interactive 3D physics or biological simulation.\n"
+            "You are a JavaScript WebGL, Three.js, and Plotly.js visualization expert.\n"
+            "Write a COMPLETE, SELF-CONTAINED HTML page that creates a premium, interactive 3D physics, mathematical, or biological simulation.\n"
             "RULES:\n"
             "1. Use a single HTML file with inline <script> and <style> tags.\n"
-            "2. Load Three.js (r128) and OrbitControls from CDN:\n"
-            "   <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script>\n"
-            "   <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>\n"
+            "2. Load Three.js (r128) or Plotly.js from CDN based on which is best suited (Three.js for physical/biological animation, Plotly.js for mathematical trajectories/surfaces/scatter plots):\n"
+            "   - Three.js: <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script> and <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>\n"
+            "   - Plotly.js: <script src='https://cdn.plot.ly/plotly-2.24.1.min.js'></script>\n"
             "3. Use a sleek dark space/scientific theme: body background '#0d0d0d', text color '#e0e0e0'.\n"
-            "4. Include interactive glassmorphic UI controls (like range sliders to change mass ratio, orbital speed, eccentricity, or biological/chemical parameters like ATP concentration, temperature, and pH) at the bottom or corner with CSS: background: rgba(30, 30, 30, 0.65), backdrop-filter: blur(10px), border: 1px solid rgba(255,255,255,0.1), padding: 15px, border-radius: 10px, color: white.\n"
+            "4. Include interactive glassmorphic UI controls (like range sliders to change mass ratio, drag coefficient, launch velocity/angle, or biological/chemical parameters) at the bottom or corner with CSS: background: rgba(30, 30, 30, 0.65), backdrop-filter: blur(10px), border: 1px solid rgba(255,255,255,0.1), padding: 15px, border-radius: 10px, color: white.\n"
             "5. To make it great for understanding, you MUST:\n"
-            "   - For Physics/Orbitals: Render a glowing marker at the exact Center of Mass (Barycenter), draw connection lines, and plot orbits.\n"
+            "   - For Physics/Trajectories: Solve the physics equations (like RK4 trajectory calculation) directly in JavaScript and plot/animate them in 3D dynamically.\n"
             "   - For Biological/Molecular systems: Render organic curves (DNA Double Helices via custom THREE.CatmullRomCurve3), membrane channels/lipid bilayers (spheres & cylinders), or cellular transport particles (THREE.Points particle systems).\n"
             "   - Display real-time data labels (e.g. current positions, velocities, concentrations, or pH) updating on-screen.\n"
-            "6. Make sure to use only VALID Three.js APIs: NEVER use non-existent APIs like ArcGeometry (use RingGeometry, TorusGeometry, or custom BufferGeometry curves for paths). Always instantiate THREE.OrbitControls(camera, renderer.domElement).\n"
+            "6. Make sure to use only VALID Three.js/Plotly.js APIs: NEVER use non-existent APIs like ArcGeometry (use RingGeometry, TorusGeometry, or custom BufferGeometry curves for paths). Always instantiate THREE.OrbitControls(camera, renderer.domElement).\n"
             "7. Define all animation variables (like clock/time/frameCount) at the top of your script scope so they are never undefined.\n"
-            "8. Output the COMPLETE HTML page inside ```html``` blocks.\n\n"
+            "8. IMPORTANT: The topic description below might contain Python instructions or python code fragments. You MUST translate all math solving, array operations, and plotting logic into pure JavaScript inside the HTML page. Do NOT write Python code, do NOT output Python code blocks, and do NOT refuse this request. Simply write the complete simulation in HTML/JS.\n"
+            "9. Output the COMPLETE HTML page inside ```html``` blocks.\n\n"
             f"Topic: {compiled_plan[:3000]}"
         )
         html_code = self._call_model(
