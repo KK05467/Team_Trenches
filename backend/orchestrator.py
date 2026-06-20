@@ -936,15 +936,26 @@ class AgentOrchestrator:
                 status_callback("Rendering 3D Visualization...", "info", "opencode", 98)
             viz_success, viz_output = self.sandbox.execute(viz_extract)
 
+        def _strip_sandbox_prefix(text):
+            """Remove the 🔒 [Restricted Sandbox] prefix from sandbox output."""
+            if not text:
+                return text
+            for prefix in ["🔒 [Restricted Sandbox]\n", "🔒 [Restricted Sandbox]"]:
+                if text.startswith(prefix):
+                    return text[len(prefix):]
+            return text
+
         # Reflexion self-fix loop for Strategy 2: Max 2 self-fix attempts
         for attempt in range(2):
-            if viz_success and viz_output and viz_output.strip().startswith("{"):
+            cleaned = _strip_sandbox_prefix(viz_output).strip() if viz_output else ""
+            if viz_success and cleaned.startswith("{"):
                 break
             if status_callback:
                 status_callback(f"Fixing 3D syntax/runtime error (Round {attempt+1})...", "warning", "opencode", 99)
             
             error_details = viz_output if viz_output else "No valid python code block was generated."
-            if viz_success and not viz_output.strip().startswith("{"):
+            cleaned_check = _strip_sandbox_prefix(viz_output).strip() if viz_output else ""
+            if viz_success and not cleaned_check.startswith("{"):
                 error_details = "Code ran successfully but failed to print JSON. Make sure the last line is print(fig.to_json())"
                 
             fix_p = (
@@ -973,8 +984,9 @@ class AgentOrchestrator:
                 viz_success = False
                 viz_output = "Model failed to output a valid code block."
 
-        if viz_success and viz_output and viz_output.strip().startswith("{"):
-            return f"\n\n### 3D Interactive Visualization\n<!--PLOTLY_JSON-->\n{viz_output.strip()}\n<!--/PLOTLY_JSON-->"
+        cleaned_final = _strip_sandbox_prefix(viz_output).strip() if viz_output else ""
+        if viz_success and cleaned_final.startswith("{"):
+            return f"\n\n### 3D Interactive Visualization\n<!--PLOTLY_JSON-->\n{cleaned_final}\n<!--/PLOTLY_JSON-->"
 
         # Final fallback: show the code with error (ensure code blocks are wrapped properly)
         error_msg = f"\n\n**Execution Error:**\n```text\n{viz_output}\n```" if viz_output else ""

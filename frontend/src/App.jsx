@@ -55,12 +55,15 @@ const PlotlyChart = ({ jsonStr }) => {
 const ArtifactSandbox = ({ htmlCode }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [blobUrl, setBlobUrl] = useState(null);
   const iframeRef = useRef(null);
-  const prevBlobRef = useRef(null);
+  const writtenRef = useRef("");
 
   useEffect(() => {
-    if (!htmlCode) return;
+    if (!htmlCode || !iframeRef.current) return;
+    // Avoid re-writing the same content
+    if (writtenRef.current === htmlCode) return;
+    writtenRef.current = htmlCode;
+
     try {
       // Bulletproof dark mode and Error Catcher injection
       let doc = htmlCode;
@@ -94,27 +97,18 @@ const ArtifactSandbox = ({ htmlCode }) => {
         }
       }
 
-      // Revoke the PREVIOUS blob URL only when creating a new one (never in cleanup)
-      if (prevBlobRef.current) {
-        URL.revokeObjectURL(prevBlobRef.current);
-      }
-      const blob = new Blob([doc], { type: "text/html" });
-      const url = URL.createObjectURL(blob);
-      prevBlobRef.current = url;
-      setBlobUrl(url);
+      // Write directly into the iframe's document — no blob URLs, no race conditions
+      const iframe = iframeRef.current;
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+      iframeDoc.open();
+      iframeDoc.write(doc);
+      iframeDoc.close();
       setHasError(false);
     } catch (err) {
-      console.error("Artifact blob error:", err);
+      console.error("Artifact write error:", err);
       setHasError(true);
     }
   }, [htmlCode]);
-
-  // Cleanup on unmount only
-  useEffect(() => {
-    return () => {
-      if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current);
-    };
-  }, []);
 
   if (hasError || !htmlCode) {
     return (
@@ -153,15 +147,12 @@ const ArtifactSandbox = ({ htmlCode }) => {
         </div>
       </div>
       <div className="artifact-iframe-wrap">
-        {blobUrl && (
-          <iframe
-            ref={iframeRef}
-            src={blobUrl}
-            sandbox="allow-scripts allow-same-origin"
-            title="AI Artifact"
-            className="artifact-iframe"
-          />
-        )}
+        <iframe
+          ref={iframeRef}
+          title="AI Artifact"
+          className="artifact-iframe"
+          style={{ background: "#0d0d0d" }}
+        />
       </div>
     </div>
   );
