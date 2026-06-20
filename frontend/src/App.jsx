@@ -247,11 +247,12 @@ const parseAndRenderSegment = (segment) => {
             return <h1 key={j} className="md-h1">{renderInlineElements(line.slice(2))}</h1>;
           }
 
-          const listMatch = line.match(/^(\s*)([-*]|\d+\.)\s+(.*)/);
+          const trimmedLine = line.trim();
+          const listMatch = trimmedLine.match(/^([\-\*]|\d+\.)\s+(.*)/);
           if (listMatch) {
-            const indent = listMatch[1].length;
-            const marker = listMatch[2];
-            const content = listMatch[3];
+            const indent = line.length - line.trimStart().length;
+            const marker = listMatch[1];
+            const content = listMatch[2];
             const isNumbered = /^\d+\.$/.test(marker);
             return (
               <div 
