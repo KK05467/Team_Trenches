@@ -424,6 +424,20 @@ export default function App() {
     return () => clearInterval(iv);
   }, []);
 
+  // Auto-focus on "ask anything" input when session changes or component mounts
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, [currentSessionId]);
+
+  // Dynamically adjust textarea height when prompt changes
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
+    }
+  }, [prompt]);
+
+
   // Persist sessions
   useEffect(() => {
     if (history.length === 0 && sessions.length === 0) return;
@@ -449,8 +463,9 @@ export default function App() {
   const handleTextareaInput = (e) => {
     setPrompt(e.target.value);
     e.target.style.height = "auto";
-    e.target.style.height = Math.min(e.target.scrollHeight, 180) + "px";
+    e.target.style.height = e.target.scrollHeight + "px";
   };
+
 
   const createNewChat = () => {
     setCurrentSessionId(Date.now());
@@ -683,13 +698,11 @@ export default function App() {
         </button>
 
         <div className="sidebar-nav">
-          <button className="nav-item" onClick={() => setSettingsOpen(true)}>
-            <span className="nav-icon">⚙️</span> Settings
-          </button>
           <button className="nav-item" onClick={handleOffload}>
             <span className="nav-icon">🧹</span> Offload Memory
           </button>
         </div>
+
 
         <div className="sidebar-section-title">Recents</div>
         <div className="history-list">
@@ -716,8 +729,12 @@ export default function App() {
           <div className="user-row">
             <div className="user-avatar">A</div>
             <span className="user-name">ARPIT BEHERA</span>
+            <button className="sidebar-settings-btn" onClick={(e) => { e.stopPropagation(); setSettingsOpen(true); }} title="Settings">
+              ⚙️
+            </button>
           </div>
         </div>
+
       </div>
 
       {/* ── MAIN CONTENT ── */}
@@ -734,7 +751,7 @@ export default function App() {
           ) : (
             <div style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center" }}>
               {history.map((msg, i) => (
-                <div key={i} className="msg-row">
+                <div key={i} className={`msg-row ${msg.type}`}>
                   <div className={`msg-avatar ${msg.type}`}>
                     {msg.type === "user" ? "A" : "✦"}
                   </div>
@@ -749,8 +766,9 @@ export default function App() {
 
               {/* Active generation */}
               {isGenerating && (
-                <div className="msg-row">
+                <div className="msg-row ai">
                   <div className="msg-avatar ai">✦</div>
+
                   <div className="msg-body">
                     <ThinkingBlock logs={currentLogs} isActive={true} />
                     {currentStream && <MessageRenderer text={currentStream} />}
