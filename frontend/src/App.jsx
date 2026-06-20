@@ -247,8 +247,7 @@ const parseAndRenderSegment = (segment) => {
             return <h1 key={j} className="md-h1">{renderInlineElements(line.slice(2))}</h1>;
           }
 
-          const trimmedLine = line.trim();
-          const listMatch = trimmedLine.match(/^([\-\*]|\d+\.)\s+(.*)/);
+          const listMatch = trimmed.match(/^([\-\*]|\d+\.)\s+(.*)/);
           if (listMatch) {
             const indent = line.length - line.trimStart().length;
             const marker = listMatch[1];
@@ -445,6 +444,7 @@ export default function App() {
   const [currentStream, setCurrentStream] = useState("");
   const [attachedImage, setAttachedImage] = useState(null);
   const [abortController, setAbortController] = useState(null);
+  const currentLogsRef = useRef([]);
 
   // Settings
   const [enableWebSearch, setEnableWebSearch] = useState(false);
@@ -582,14 +582,19 @@ export default function App() {
     setIsGenerating(true);
     setCurrentStream("");
     setCurrentLogs([]);
+    currentLogsRef.current = [];
     setMenuOpen(false);
 
     const controller = new AbortController();
     setAbortController(controller);
 
+    let fullText = "";
+
     try {
       // Show a cold-start hint — model loading takes 2-4 minutes on first run
-      setCurrentLogs(["🧊 Cold start: loading AI models into GPU memory (2-4 min on first run, instant after)..."]);
+      const initLog = "🧊 Cold start: loading AI models into GPU memory (2-4 min on first run, instant after)...";
+      setCurrentLogs([initLog]);
+      currentLogsRef.current = [initLog];
 
       const res = await fetch(`${serverUrl}/api/chat`, {
         method: "POST",
@@ -628,7 +633,6 @@ export default function App() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let fullText = "";
       let firstChunkLogged = false;
       let lineBuffer = ""; // Buffer for incomplete JSON lines split across chunks
 
@@ -659,6 +663,7 @@ export default function App() {
           try {
             const data = JSON.parse(line);
             if (data.type === "status") {
+              currentLogsRef.current = [...currentLogsRef.current, data.message];
               setCurrentLogs(prev => [...prev, data.message]);
             } else if (data.type === "chunk") {
               fullText += data.content || data.text || "";
@@ -688,6 +693,7 @@ export default function App() {
             setHistory(prev => [...prev, { type: "ai", text: fullText, logs: [] }]);
             setIsGenerating(false);
           } else if (data.type === "status") {
+            currentLogsRef.current = [...currentLogsRef.current, data.message];
             setCurrentLogs(prev => [...prev, data.message]);
           }
         } catch {}
@@ -716,7 +722,7 @@ export default function App() {
 
     } catch (err) {
       if (err.name === "AbortError") {
-        setHistory(prev => [...prev, { type: "ai", text: fullText || "Cancelled." }]);
+        setHistory(prev => [...prev, { type: "ai", text: fullText || "Cancelled.", logs: currentLogsRef.current }]);
       } else if (err.message && (err.message.toLowerCase().includes("networkerror") || err.message.toLowerCase().includes("failed to fetch"))) {
         setHistory(prev => [...prev, { type: "ai", text: `❌ **Cannot reach backend.**\n\n**Backend not started?** Open a terminal and run:\n\`\`\`\nsource venv/bin/activate\npython backend/app.py\n\`\`\`\nWait for: \`Uvicorn running on http://127.0.0.1:8000\`\n\n**First prompt?** If the backend IS running, the models are still loading into GPU memory — this takes **2-4 minutes on first run**. Please wait and try again.` }]);
       } else {
@@ -730,7 +736,7 @@ export default function App() {
       setHistory(prev => {
         const copy = [...prev];
         const lastAi = [...copy].reverse().find(m => m.type === "ai");
-        if (lastAi) lastAi.logs = currentLogs;
+        if (lastAi && (!lastAi.logs || lastAi.logs.length === 0)) lastAi.logs = currentLogsRef.current;
         return copy;
       });
       setCurrentLogs([]);
