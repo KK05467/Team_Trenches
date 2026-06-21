@@ -1165,10 +1165,10 @@ class AgentOrchestrator:
         gen_temp = 0.1    # Low for strict code writing
 
         # ── Three-Way Classification ─────────────────────────────────────
+        router_llm = self._get_model("router", required_ctx=router_ctx)
         if isinstance(mode, str) and mode.upper() in ["SIMPLE", "CODING", "REASONING"]:
             task_type = mode.upper()
         else:
-            router_llm = self._get_model("router", required_ctx=router_ctx)
             task_type = self._classify_task(router_llm, prompt)
         if status_callback:
             status_callback(f"Task classified as: {task_type}", "info", "router", 12)
