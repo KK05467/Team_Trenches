@@ -473,6 +473,7 @@ export default function App() {
   const [maxTokens, setMaxTokens] = useState(2048);
   const [temperature, setTemperature] = useState(0.7);
   const [deviceMode, setDeviceMode] = useState("gpu");
+  const [routingMode, setRoutingMode] = useState(() => localStorage.getItem("routing_mode") || "auto");
 
   // Typing animation
   const [displayText, setDisplayText] = useState("");
@@ -629,7 +630,7 @@ export default function App() {
         body: JSON.stringify({
           prompt: userText,
           image: img,
-          mode: "auto",
+          mode: routingMode,
           context_length: contextLength,
           max_tokens: maxTokens,
           temperature,
@@ -967,6 +968,15 @@ export default function App() {
               </select>
             </div>
             <div className="modal-field">
+              <label>Routing Mode</label>
+              <select value={routingMode} onChange={e => setRoutingMode(e.target.value)}>
+                <option value="auto">Auto (Smart Router)</option>
+                <option value="reasoning">Reasoning (DeepSeek Math/Theory)</option>
+                <option value="coding">Coding (Actor-Critic Sandbox)</option>
+                <option value="simple">Simple (Direct Response)</option>
+              </select>
+            </div>
+            <div className="modal-field">
               <label>Server URL</label>
               <input
                 type="text"
@@ -994,6 +1004,7 @@ export default function App() {
                 if (finalUrl.endsWith("/")) finalUrl = finalUrl.slice(0, -1);
                 finalUrl = finalUrl.replace("localhost", "127.0.0.1").replace("0.0.0.0", "127.0.0.1");
                 localStorage.setItem("server_url", finalUrl);
+                localStorage.setItem("routing_mode", routingMode);
                 setServerUrl(finalUrl);
 
                 // Close the modal immediately — don't block the user

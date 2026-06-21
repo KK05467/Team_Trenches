@@ -1165,8 +1165,11 @@ class AgentOrchestrator:
         gen_temp = 0.1    # Low for strict code writing
 
         # ── Three-Way Classification ─────────────────────────────────────
-        router_llm = self._get_model("router", required_ctx=router_ctx)
-        task_type = self._classify_task(router_llm, prompt)
+        if isinstance(mode, str) and mode.upper() in ["SIMPLE", "CODING", "REASONING"]:
+            task_type = mode.upper()
+        else:
+            router_llm = self._get_model("router", required_ctx=router_ctx)
+            task_type = self._classify_task(router_llm, prompt)
         if status_callback:
             status_callback(f"Task classified as: {task_type}", "info", "router", 12)
 
@@ -1437,14 +1440,20 @@ class AgentOrchestrator:
 
                     if status_callback:
                         status_callback("Verifying in Reasoning Playground...", "info", "deepseek_r1", 35 + rnd*12)
-                    verified, pg_out, _ = self._run_playground(ds_llm, ds_answer, "reasoning")
+                    verified, pg_out, test_code = self._run_playground(ds_llm, ds_answer, "reasoning")
 
                     if verified:
                         if status_callback:
                             status_callback("Reasoning VERIFIED!", "success", "deepseek_r1", 80)
                         router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
                         viz = self._check_3d_gate(prompt, ds_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-                        return f"### Verified Answer\n{ds_answer}{viz}"
+                        verification_block = (
+                            f"\n\n### Computational Verification\n"
+                            f"```python\n{test_code}\n```\n\n"
+                            f"**Verification Output:**\n"
+                            f"```text\n{pg_out}\n```"
+                        )
+                        return f"### Verified Answer\n{ds_answer}{verification_block}{viz}"
 
                     # VibeThinker tries to fix
                     if status_callback:
@@ -1455,13 +1464,19 @@ class AgentOrchestrator:
                         f"Error:\n{pg_out[:1000]}\nProvide a corrected, complete answer."
                     )
                     vibe_answer = self._strip_thinking(self._call_model(vibe_llm, vibe_p, gen_tokens, gen_temp, system_prompt=reasoning_sys))
-                    v2, _, _ = self._run_playground(vibe_llm, vibe_answer, "reasoning")
+                    v2, vibe_pg_out, vibe_test_code = self._run_playground(vibe_llm, vibe_answer, "reasoning")
                     if v2:
                         if status_callback:
                             status_callback("VibeThinker's correction VERIFIED!", "success", "vibethinker", 80)
                         router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
                         viz = self._check_3d_gate(prompt, vibe_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-                        return f"{vibe_answer}{viz}"
+                        verification_block = (
+                            f"\n\n### Computational Verification\n"
+                            f"```python\n{vibe_test_code}\n```\n\n"
+                            f"**Verification Output:**\n"
+                            f"```text\n{vibe_pg_out}\n```"
+                        )
+                        return f"### Verified Answer\n{vibe_answer}{verification_block}{viz}"
                     # Don't let ds_safe grow unboundedly — cap the appended errors
                     error_summary = pg_out[:300]
                     if len(ds_safe) + len(error_summary) < (ds_ctx - gen_tokens - 200) * 3:
@@ -1481,7 +1496,13 @@ class AgentOrchestrator:
                 status_callback("Max retries reached. Returning best effort.", "warning", "system", 90)
             router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
             viz = self._check_3d_gate(prompt, ds_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-            return f"{ds_answer}{viz}"
+            verification_block = (
+                f"\n\n### Computational Verification (Failed)\n"
+                f"```python\n{test_code}\n```\n\n"
+                f"**Verification Output:**\n"
+                f"```text\n{pg_out}\n```"
+            )
+            return f"### Best Effort Answer\n{ds_answer}{verification_block}{viz}"
 
         else:
             # ── Standard LLM Debate (non-testable reasoning) ─────────────
