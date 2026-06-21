@@ -569,22 +569,28 @@ class AgentOrchestrator:
         if hasattr(llm, "n_ctx"):
             ctx = llm.n_ctx()
             # Chat template overhead: role markers, BOS/EOS tokens (~100 tokens)
-            template_overhead = 100
-            # Estimate prompt tokens: ~3.5 chars per token (conservative)
+            template_overhead = 120
+            # Estimate prompt tokens: ~3.3 chars per token (conservative)
             est_prompt_tokens = len(prompt) // 3 + template_overhead
             if system_prompt:
                 est_prompt_tokens += len(system_prompt) // 3
             
-            # If prompt alone would overflow, truncate it to fit
+            # Smart token allocation: if total tokens exceed ctx, first reduce max_tokens to fit prompt
+            if est_prompt_tokens + max_tokens > ctx:
+                # Leave at least 512 tokens for generation
+                max_tokens = max(512, ctx - est_prompt_tokens - 50)
+            
+            # If even with minimum generation tokens the prompt doesn't fit, truncate the prompt
             max_prompt_chars = (ctx - max_tokens - template_overhead) * 3
             if system_prompt:
                 max_prompt_chars -= len(system_prompt)
-            if max_prompt_chars < 300:
-                max_prompt_chars = 300
+            if max_prompt_chars < 900:
+                max_prompt_chars = 900
+                
             if len(prompt) > max_prompt_chars:
                 # Keep beginning and end of prompt (most important parts)
-                keep_start = int(max_prompt_chars * 0.2)
-                keep_end = int(max_prompt_chars * 0.8)
+                keep_start = int(max_prompt_chars * 0.3)
+                keep_end = int(max_prompt_chars * 0.7)
                 prompt = prompt[:keep_start] + "\n...[TRUNCATED FOR CONTEXT LIMIT]...\n" + prompt[-keep_end:]
                 est_prompt_tokens = len(prompt) // 3 + template_overhead
                 if system_prompt:
@@ -1029,12 +1035,24 @@ class AgentOrchestrator:
             if viz_success and not cleaned_check.startswith("{"):
                 error_details = "Code ran successfully but failed to print JSON. Make sure the last line is print(fig.to_json())"
                 
-            fix_p = (
-                f"This Plotly code failed:\n{viz_extract}\n\nError/Output:\n{error_details}\n\n"
-                f"Fix it. REMEMBER: Do NOT use update_scenes(), FigureControls, or plotly.subplots. "
-                f"Use ONLY go.Figure(), go.Surface/Scatter3d, and fig.update_layout(). "
-                f"Output ONLY the corrected script in ```python``` blocks. End with print(fig.to_json())."
-            )
+            if not viz_extract:
+                fix_p = (
+                    "You failed to generate a valid Python code block in your previous attempt.\n\n"
+                    "Please write a complete Python script using plotly for the 3D interactive visualization.\n"
+                    "RULES:\n"
+                    "1. Import plotly.graph_objects as go and numpy as np ONLY\n"
+                    "2. Create a 3D scatter, surface, or line plot\n"
+                    "3. Use fig.update_layout(template='plotly_dark', margin=dict(l=0,r=0,t=40,b=0))\n"
+                    "4. Last line MUST be: print(fig.to_json())\n\n"
+                    f"Topic: {compiled_plan[:2000]}"
+                )
+            else:
+                fix_p = (
+                    f"This Plotly code failed:\n{viz_extract}\n\nError/Output:\n{error_details}\n\n"
+                    "Fix it. REMEMBER: Do NOT use update_scenes(), FigureControls, or plotly.subplots. "
+                    "Use ONLY go.Figure(), go.Surface/Scatter3d, and fig.update_layout(). "
+                    "Output ONLY the corrected script in ```python``` blocks. End with print(fig.to_json())."
+                )
             viz_fixed = self._call_model(
                 coder_llm, 
                 fix_p, 
@@ -1153,11 +1171,11 @@ class AgentOrchestrator:
         if self.context_length == 0:
             router_ctx = min(ctx_cap, est_tokens + self.max_tokens)
             ds_ctx = min(ctx_cap, est_tokens + self.max_tokens)
-            oc_ctx = min(ctx_cap, 4096)
+            oc_ctx = min(ctx_cap, 8192)
         else:
             router_ctx = min(self.context_length, ctx_cap)
             ds_ctx = min(self.context_length, ctx_cap)
-            oc_ctx = min(4096, self.context_length, ctx_cap)
+            oc_ctx = min(8192, self.context_length, ctx_cap)
 
         # gen_tokens must leave room for the prompt inside the context window
         gen_tokens = 4096
