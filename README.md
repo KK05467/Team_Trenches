@@ -272,6 +272,18 @@ The sandboxed python environment supports live prediction and data analysis:
 
 ---
 
+## 🆕 Pipeline Optimizations (June 2026 Update)
+
+To maximize accuracy, performance, and stability on consumer hardware, the following pipeline optimizations have been implemented:
+
+* **Dynamic Context Scaling (RAM/VRAM-Aware):** Beyond the base 8k token limit, the context window dynamically expands up to **32k tokens** if the system has RAM/VRAM headroom (leaving a strict 5% memory safety margin). This allows the models to swallow massive web scraped pages or long local files when memory is clear.
+* **Deterministic Playground Verification:** Test script writing is routed to the **Router (Phi-3.5-Mini)** rather than the verbose DeepSeek-R1-7B. This prevents DeepSeek's long `<think>...</think>` tokens from consuming the context window and causing code truncation/syntax errors.
+* **Emergency Search Verification & Correction Loop:** After executing an emergency web search, the pipeline runs exactly 1 round of sandbox verification on the healed result. If it fails, DeepSeek gets the error traceback to perform a final correction round before returning the answer.
+* **RAG Variable Prioritization (No Parameter Drift):** Restructured system prompts with strict instructions forcing the models to use past memories *only* for algorithmic structure, ensuring they always prioritize the active user prompt's exact velocities, coordinates, and parameters.
+* **Memory Swap Safety:** Solved model-reuse memory faults by implementing safe model pointer re-acquisition in the orchestrator execution loops, completely preventing GPU memory segfaults during hot-swaps.
+
+---
+
 ## 📦 Setup & Installation
 
 See the dedicated guides:
