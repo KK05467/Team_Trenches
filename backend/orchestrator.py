@@ -1844,6 +1844,7 @@ class AgentOrchestrator:
                         f"This answer failed verification.\nAnswer:\n{ds_answer[:2000]}\n"
                         f"Error:\n{pg_out[:1000]}\nProvide a corrected, complete answer."
                     )
+                    ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
                     vibe_answer = self._strip_thinking(self._call_model(ds_llm, vibe_p, gen_tokens, gen_temp, system_prompt=reasoning_sys))
                     v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
                     if v2:
