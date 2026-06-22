@@ -132,6 +132,8 @@ ALLOWED_MODULES = {
     'networkx',
     # Astrophysics & Celestial Mechanics
     'astropy',
+    # Bioinformatics & Cheminformatics
+    'Bio', 'rdkit',
     # Web & API requests (for real-time weather and stock prediction data)
     'requests', 'urllib', 'http',
 }
