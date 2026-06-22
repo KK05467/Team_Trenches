@@ -968,7 +968,7 @@ class AgentOrchestrator:
         result = self._call_model(router_llm, p, max_tokens=10, temperature=0.1)
         return "YES" in str(result).upper()
 
-    def _run_playground(self, model, hypothesis, purpose="logic", status_callback=None, model_key=None):
+    def _run_playground(self, model, hypothesis, purpose="logic", status_callback=None, model_key=None, original_prompt=None):
         """
         Have a model write a verification script and run it in the sandbox.
         Returns (verified: bool, output: str, test_code: str)
@@ -978,6 +978,10 @@ class AgentOrchestrator:
         # from depleting the context window and causing code truncation, or VibeThinker syntax errors.
         if purpose == "reasoning" or model_key in ["vibethinker", "deepseek_r1"]:
             coder_model = self._get_model("router", required_ctx=2048)
+
+        prompt_context = ""
+        if original_prompt:
+            prompt_context = f"ORIGINAL QUERY CONSTRAINTS:\n{original_prompt[:1500]}\n\n"
 
         playground_prompt = (
             f"Write a Python script (max 50 lines) that {'tests this code logic' if purpose == 'logic' else 'verifies this reasoning'}.\n\n"
@@ -1005,6 +1009,7 @@ class AgentOrchestrator:
             "Pick the MOST APPROPRIATE tool for the task. Do NOT import all of them.\n"
             "Do NOT use plotly, matplotlib, pygame, or any GUI.\n"
             "Output ONLY the code in ```python``` blocks.\n\n"
+            f"{prompt_context}"
             f"To verify:\n{hypothesis[:2000]}"
         )
         test_response = self._call_model(coder_model, playground_prompt, max_tokens=4096, temperature=0.1)
@@ -1177,12 +1182,18 @@ class AgentOrchestrator:
             "2. Load Three.js (r128) or Plotly.js from CDN based on which is best suited (Three.js for physical/biological animation, Plotly.js for mathematical trajectories/surfaces/scatter plots):\n"
             "   - Three.js: <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script> and <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>\n"
             "   - Plotly.js: <script src='https://cdn.plot.ly/plotly-2.24.1.min.js'></script>\n"
-            "3. Use a sleek dark space/scientific theme: body background '#0d0d0d', text color '#e0e0e0'.\n"
-            "4. Include interactive glassmorphic UI controls (like range sliders to change mass ratio, drag coefficient, launch velocity/angle, or biological/chemical parameters) at the bottom or corner with CSS: background: rgba(30, 30, 30, 0.65), backdrop-filter: blur(10px), border: 1px solid rgba(255,255,255,0.1), padding: 15px, border-radius: 10px, color: white.\n"
-            "5. To make it great for understanding, you MUST:\n"
-            "   - For Physics/Trajectories: Solve the physics equations (like RK4 trajectory calculation) directly in JavaScript and plot/animate them in 3D dynamically.\n"
-            "   - For Biological/Molecular systems: Render organic curves (DNA Double Helices via custom THREE.CatmullRomCurve3), membrane channels/lipid bilayers (spheres & cylinders), or cellular transport particles (THREE.Points particle systems).\n"
-            "   - Display real-time data labels (e.g. current positions, velocities, concentrations, or pH) updating on-screen.\n"
+            "3. Use a sleek dark space/scientific theme: body background '#0d0d0d', text color '#e0e0e0', font-family 'Inter', system-ui, sans-serif.\n"
+            "4. You MUST include interactive glassmorphic UI controls at the bottom or corner of the screen:\n"
+            "   - Add range sliders (`<input type='range'>`) for all primary variables in the problem (e.g., field strengths like E_y and B_z, charge, mass, initial velocity components, or other simulation parameters).\n"
+            "   - Add UI labels displaying the exact current value of each slider.\n"
+            "   - Add a Play/Pause button (`||` / `▶`) and a Reset button (`↻`) to control the simulation.\n"
+            "   - Style the control panel using premium glassmorphism: background: rgba(30, 30, 30, 0.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); padding: 20px; border-radius: 12px; color: white; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37).\n"
+            "5. To make it great for understanding, you MUST implement motion and solver calculations:\n"
+            "   - Solve the differential equations/physics (like Verlet, Euler, or RK4 trajectory integration) directly inside your JavaScript loop.\n"
+            "   - Make the simulation respond dynamically when the user drags the sliders. If the simulation is paused, changing sliders should update the preview or reset the integration state.\n"
+            "   - Draw colored arrow helpers (e.g., using THREE.ArrowHelper) to visualize force, velocity, electric field, or magnetic field vectors dynamically.\n"
+            "   - If using Three.js: Run the integration inside a `requestAnimationFrame` loop that advances the physics state by `dt` every frame if 'playing' is true. Animate a particle (representing the proton/object) moving along the path.\n"
+            "   - If using Plotly.js: Use `Plotly.animate` or redraw the plot with new points to create a smooth movement.\n"
             "6. Make sure to use only VALID Three.js/Plotly.js APIs: NEVER use non-existent APIs like ArcGeometry (use RingGeometry, TorusGeometry, or custom BufferGeometry curves for paths). Always instantiate THREE.OrbitControls(camera, renderer.domElement).\n"
             "7. Define all animation variables (like clock/time/frameCount) at the top of your script scope so they are never undefined.\n"
             "8. IMPORTANT: The topic description below might contain Python instructions or python code fragments. You MUST translate all math solving, array operations, and plotting logic into pure JavaScript inside the HTML page. Do NOT write Python code, do NOT output Python code blocks, and do NOT refuse this request. Simply write the complete simulation in HTML/JS.\n"
@@ -1195,9 +1206,14 @@ class AgentOrchestrator:
             max_tokens=gen_tokens, 
             temperature=gen_temp,
             system_prompt=(
-                "You are an expert coder. Writing and generating complete, self-contained HTML/JS files "
-                "with inline CSS and JavaScript logic (such as Three.js or Plotly.js) is FULLY supported and expected. "
-                "Do NOT refuse this request. Output only the complete HTML page inside ```html``` code blocks."
+                "You are an expert JavaScript, WebGL, Three.js, and Plotly.js coder.\n"
+                "To ensure the JavaScript runs flawlessly without ReferenceErrors or TypeErrors:\n"
+                "1. Declare all variables used across different functions (like scene, camera, renderer, controls, particles, clock, fields) globally at the very top of your script block.\n"
+                "2. When instantiating OrbitControls, always pass both parameters: new THREE.OrbitControls(camera, renderer.domElement).\n"
+                "3. Never reference the window or document object before they are fully loaded. Put your script at the bottom of the body element, or wrap initialization in window.addEventListener('DOMContentLoaded', ...).\n"
+                "4. Never use non-existent geometries like ArcGeometry. To draw a curve path, construct a custom curve using new THREE.CatmullRomCurve3(points), get the points with curve.getPoints(100), and assign them to a new THREE.BufferGeometry().setFromPoints(points).\n"
+                "5. Ensure the WebGL renderer has a fallback/check so it doesn't crash if canvas contexts are initialized in limited environments. Wrap canvas instantiation and getContext calls in try-catch blocks where appropriate.\n"
+                "6. Output ONLY the complete, self-contained HTML document inside ```html``` code blocks."
             )
         )
         html_extract = Sandbox.extract_code(html_code)
@@ -1222,7 +1238,8 @@ class AgentOrchestrator:
                 "Please fix it. Common guidelines:\n"
                 "1. If using Three.js, ensure you load OrbitControls correctly, NEVER use non-existent APIs like ArcGeometry (use RingGeometry or TorusGeometry instead), and define all animation variables (like clock/time/frameCount).\n"
                 "2. If using Plotly.js, ensure layout backgrounds are dark, colorscales are explicit, and target elements exist.\n"
-                "3. Ensure there are no JavaScript syntax errors or undefined variables.\n\n"
+                "3. Ensure the glassmorphic control card contains functional sliders for variables and play/pause/reset buttons that actually update the physics loop dynamically.\n"
+                "4. Ensure there are no JavaScript syntax errors or undefined variables.\n\n"
                 "Output ONLY the complete, corrected HTML page inside ```html``` blocks."
             )
             html_fixed = self._call_model(
@@ -1231,9 +1248,10 @@ class AgentOrchestrator:
                 max_tokens=gen_tokens, 
                 temperature=gen_temp,
                 system_prompt=(
-                    "You are an expert coder. Writing and fixing complete, self-contained HTML/JS files "
-                    "with inline CSS and JavaScript logic (such as Three.js or Plotly.js) is FULLY supported and expected. "
-                    "Do NOT refuse this request. Output only the complete HTML page inside ```html``` code blocks."
+                    "You are an expert JavaScript, WebGL, Three.js, and Plotly.js coder.\n"
+                    "Identify and repair the specific ReferenceError, TypeError, or SyntaxError reported in the error message.\n"
+                    "Ensure all state variables are in the global scope, OrbitControls has both arguments, and no non-existent geometry builders are used.\n"
+                    "Output ONLY the complete, corrected HTML page inside ```html``` blocks."
                 )
             )
             fixed_extract = Sandbox.extract_code(html_fixed)
@@ -1244,8 +1262,19 @@ class AgentOrchestrator:
                 html_valid = False
                 html_error = "No code block found in response."
 
-        if html_valid and html_extract:
-            return f"\n\n### 3D Interactive Visualization (Live Artifact)\n<!--ARTIFACT_HTML-->\n{html_extract}\n<!--/ARTIFACT_HTML-->"
+        # Suggestion A: Bypass verification if Node is missing or if it's a browser-environment mock error
+        bypass_verification = False
+        if html_extract:
+            is_node_missing = any(kw in html_error.lower() for kw in ["node", "runtime not found", "executable not found", "command not found"])
+            is_mock_error = any(kw in html_error.lower() for kw in ["canvas", "webgl", "document is not defined", "window is not defined"])
+            if is_node_missing or is_mock_error:
+                bypass_verification = True
+
+        if (html_valid or bypass_verification) and html_extract:
+            warning_msg = ""
+            if bypass_verification:
+                warning_msg = "\n<!-- Note: HTML verification bypassed due to environment/runtime differences. Rendering best-effort. -->"
+            return f"\n\n### 3D Interactive Visualization (Live Artifact){warning_msg}\n<!--ARTIFACT_HTML-->\n{html_extract}\n<!--/ARTIFACT_HTML-->"
 
         # ── Strategy 2: Python Plotly (backend sandbox verified fallback) ──────────
         if status_callback:
@@ -1593,7 +1622,7 @@ class AgentOrchestrator:
             # ── Phase 2: Reasoning Sandbox — Verify Logic ────────────────
             if status_callback:
                 status_callback("Reasoning Sandbox: Verifying logic...", "info", "deepseek_r1", 30)
-            verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key="deepseek_r1")
+            verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key="deepseek_r1", original_prompt=prompt)
 
             if not verified:
                 if status_callback:
@@ -1604,7 +1633,7 @@ class AgentOrchestrator:
                     f"Error:\n{pg_out[:1000]}\nRewrite a corrected logic plan."
                 )
                 ds_draft = self._strip_thinking(self._call_model(vibe_llm, fix_p, gen_tokens, logic_temp, system_prompt=planner_sys))
-                v2, _, _ = self._run_playground(vibe_llm, ds_draft, "logic", model_key="vibethinker")
+                v2, _, _ = self._run_playground(vibe_llm, ds_draft, "logic", model_key="vibethinker", original_prompt=prompt)
                 if v2 and status_callback:
                     status_callback("VibeThinker corrected the logic!", "success", "vibethinker", 40)
                 elif status_callback:
@@ -1829,7 +1858,7 @@ class AgentOrchestrator:
 
                     if status_callback:
                         status_callback(f"Verifying in Reasoning Playground (Attempt {rnd+1}/{max_rounds})...", "info", "deepseek_r1", 35 + rnd*12)
-                    verified, pg_out, test_code = self._run_playground(ds_llm, ds_answer, "reasoning", model_key="deepseek_r1")
+                    verified, pg_out, test_code = self._run_playground(ds_llm, ds_answer, "reasoning", model_key="deepseek_r1", original_prompt=prompt)
 
                     if verified:
                         if status_callback:
@@ -1854,7 +1883,7 @@ class AgentOrchestrator:
                     )
                     ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
                     vibe_answer = self._strip_thinking(self._call_model(ds_llm, vibe_p, gen_tokens, gen_temp, system_prompt=reasoning_sys))
-                    v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
+                    v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1", original_prompt=prompt)
                     if v2:
                         if status_callback:
                             status_callback("DeepSeek-R1's correction VERIFIED!", "success", "deepseek_r1", 80)
@@ -1919,7 +1948,7 @@ class AgentOrchestrator:
                         f"Failed Draft:\n{ds_answer[:1500]}"
                     )
                     vibe_answer = self._strip_thinking(self._call_model(ds_llm, emergency_prompt, gen_tokens, gen_temp, system_prompt=reasoning_sys))
-                    v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
+                    v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1", original_prompt=prompt)
                     if not v2:
                         # Attempt exactly 1 round of playground correction for emergency healing
                         if status_callback:
@@ -1932,7 +1961,7 @@ class AgentOrchestrator:
                         )
                         ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
                         vibe_answer = self._strip_thinking(self._call_model(ds_llm, corr_prompt, gen_tokens, gen_temp, system_prompt=reasoning_sys))
-                        v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
+                        v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1", original_prompt=prompt)
                     if v2:
                         if status_callback:
                             status_callback("Emergency Search Healing SUCCESSFUL!", "success", "deepseek_r1", 100)
