@@ -93,10 +93,16 @@ class TransformerWrapper:
             del self.tokenizer
         gc.collect()
         if torch:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
+            except Exception:
+                pass
 
 
 class AgentOrchestrator:
@@ -134,11 +140,37 @@ class AgentOrchestrator:
         # old models *before* a new 5-7 GB model load crashes with OOM.
         # On iGPUs (Intel/AMD shared memory), VRAM = RAM so this doesn't apply.
         self.vram_safety_gb = 2.0
+        self.kaggle_hotswap_mode = False
         if torch and torch.cuda.is_available():
             try:
                 _free, total_vram = torch.cuda.mem_get_info(0)
                 total_vram_gb = total_vram / (1024 ** 3)
                 self.vram_safety_gb = round(total_vram_gb * 0.40, 1)  # 40% reserve
+                
+                # ── Kaggle dGPU Hot-Swap Mode Detection ──
+                # If System RAM is massive (>24GB) but VRAM is restricted (<=16GB)
+                if self.total_ram_gb >= 24 and total_vram_gb <= 16:
+                    ram_percent = psutil.virtual_memory().percent
+                    is_kaggle = os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None or os.path.exists('/kaggle')
+                    # Activate if we are in Kaggle or have enough free memory (RAM usage < 25%)
+                    if is_kaggle or ram_percent < 25.0:
+                        self.kaggle_hotswap_mode = True
+                        # ── EVM Resource Override ──────────────────────────
+                        # In EVM mode, only ONE model is ever in VRAM at a time,
+                        # and System RAM is a dedicated holding area.
+                        # Safe to use 90-95% of all resources.
+                        # RAM:  keep only 5% free (~1.5 GB on 31 GB) for OS kernel
+                        # VRAM: keep only 5% free (~0.8 GB on 16 GB) for CUDA runtime
+                        self.ram_safety_gb = round(self.total_ram_gb * 0.05, 1)
+                        self.vram_safety_gb = round(total_vram_gb * 0.05, 1)
+                        print("🚀 DMA: Activated EVM (Enterprise VRAM Multiplexing)!")
+                        print(f"   ⚡ EVM Override: RAM threshold = {self.ram_safety_gb:.1f} GB "
+                              f"(95% usable of {self.total_ram_gb:.0f} GB)")
+                        print(f"   ⚡ EVM Override: VRAM threshold = {self.vram_safety_gb:.1f} GB "
+                              f"(95% usable of {total_vram_gb:.0f} GB)")
+                    else:
+                        print(f"⚠️ DMA: Hot-Swap skipped — RAM usage too high ({ram_percent:.1f}%)")
+                        
                 print(f"🎮 DMA: NVIDIA GPU detected — {total_vram_gb:.0f} GB VRAM, "
                       f"evict threshold = {self.vram_safety_gb:.1f} GB free")
             except Exception:
@@ -154,6 +186,10 @@ class AgentOrchestrator:
                     self.max_auto_ctx = 8192  # Increased from 4096 to prevent token cutoff
                 elif total_vram_gb <= 24:
                     self.max_auto_ctx = 8192  # Increased from 6144
+                elif total_vram_gb <= 48:
+                    self.max_auto_ctx = 32768  # A6000 (48GB) / A100 (40GB) -> 32k context
+                else:
+                    self.max_auto_ctx = 65536  # H100 (80GB) -> 64k context
                 print(f"📐 DMA: Auto-context ceiling = {self.max_auto_ctx} tokens (based on {total_vram_gb:.0f} GB VRAM)")
             except Exception:
                 pass
@@ -189,6 +225,91 @@ class AgentOrchestrator:
             return free / (1024 ** 3)
         except Exception:
             return None
+
+    def _get_dynamic_context_ceiling(self, model_key):
+        """Dynamically computes the safe context ceiling for a specific model based on actual free VRAM and free RAM.
+        Takes into account the EVM hot-swap (unloading other models) and the size of the target model."""
+        # Determine base limit (8k)
+        base_limit = getattr(self, 'max_auto_ctx', 8192)
+        
+        # Check system RAM margins
+        vm = psutil.virtual_memory()
+        total_ram_gb = vm.total / (1024 ** 3)
+        free_ram_gb = vm.available / (1024 ** 3)
+        ram_used_pct = (vm.total - vm.available) / vm.total * 100
+        
+        # Scale context ceiling if there is plenty of system RAM (leaving 5% margin)
+        ram_allowed_ceiling = base_limit
+        if ram_used_pct < 95.0:
+            five_percent_ram_gb = total_ram_gb * 0.05
+            surplus_ram = free_ram_gb - five_percent_ram_gb
+            if surplus_ram > 0:
+                ram_allowed_ceiling = int(base_limit + surplus_ram * 4000)
+                ram_allowed_ceiling = min(32768, ram_allowed_ceiling)
+
+        # Check GPU VRAM margins
+        vram_allowed_ceiling = ram_allowed_ceiling
+        if torch and torch.cuda.is_available():
+            try:
+                free_vram, total_vram = torch.cuda.mem_get_info(0)
+                free_vram_gb = free_vram / (1024 ** 3)
+                total_vram_gb = total_vram / (1024 ** 3)
+                vram_used_pct = (total_vram - free_vram) / total_vram * 100
+                
+                if vram_used_pct < 95.0:
+                    five_percent_vram_gb = total_vram_gb * 0.05
+                    surplus_vram = free_vram_gb - five_percent_vram_gb
+                    if surplus_vram > 0:
+                        vram_allowed_ceiling = int(base_limit + surplus_vram * 8000)
+                        vram_allowed_ceiling = min(32768, vram_allowed_ceiling)
+            except Exception:
+                pass
+
+        hard_limit = min(ram_allowed_ceiling, vram_allowed_ceiling)
+        hard_limit = max(8192, hard_limit)
+        
+        # 1. System RAM Constraints (Emergency fallback only to prevent OS crash)
+        free_ram = self._get_ram_free_gb()
+        if free_ram < 1.5:
+            ram_limit = 2048
+        else:
+            ram_limit = hard_limit
+
+        # 2. GPU VRAM Constraints (Theoretical Free VRAM after EVM Swap)
+        vram_limit = hard_limit
+        if torch and torch.cuda.is_available():
+            try:
+                free_vram = self._get_vram_free_gb(0)
+                if free_vram is not None:
+                    # In EVM mode, if other models are loaded, their VRAM will be freed.
+                    # Calculate VRAM that will be freed by unloading other models
+                    freed_by_evm = 0.0
+                    if getattr(self, 'kaggle_hotswap_mode', False):
+                        for mk, model_obj in self.loaded_models.items():
+                            if mk != model_key:
+                                freed_by_evm += self._estimate_model_size_gb(mk)
+                    
+                    target_model_size = self._estimate_model_size_gb(model_key)
+                    # Theoretical free VRAM after swap and load
+                    theo_free_vram = free_vram + freed_by_evm - target_model_size
+                    
+                    # Deduct overhead for model execution (computational graph, activations)
+                    usable_kv_vram = theo_free_vram - 1.5
+                    if usable_kv_vram < 0:
+                        usable_kv_vram = 0.5
+                    
+                    # 1 token ≈ 0.13 MB of KV cache (FP16 8B model)
+                    calculated_limit = int((usable_kv_vram * 1024) / 0.13)
+                    # Round down to nearest multiple of 1024
+                    calculated_limit = (calculated_limit // 1024) * 1024
+                    vram_limit = max(1024, min(hard_limit, calculated_limit))
+            except Exception:
+                pass
+                
+        # Sane bottleneck of RAM, VRAM, and hard limit
+        dynamic_cap = min(hard_limit, ram_limit, vram_limit)
+        dynamic_cap = max(1024, dynamic_cap)
+        return dynamic_cap
 
     def _get_sysfs_gpu_vram(self):
         """Read AMD/Intel GPU VRAM via Linux sysfs. Returns list of (free_gb, total_gb, card_name)."""
@@ -234,10 +355,16 @@ class AgentOrchestrator:
         del model_obj
         gc.collect()
         if torch:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
+            except Exception:
+                pass
         print(f"  ✅ Evicted '{lru_key}'. RAM now: {self._get_ram_free_gb():.1f} GB free")
         return True
 
@@ -272,29 +399,33 @@ class AgentOrchestrator:
             free_ram = self._get_ram_free_gb()
 
         # ── CUDA/ROCm VRAM Check (NVIDIA + AMD ROCm dGPU) ───────────────
-        if torch and torch.cuda.is_available():
-            for gpu_idx in range(torch.cuda.device_count()):
-                vram_free = self._get_vram_free_gb(gpu_idx)
-                if vram_free is None:
-                    continue
-                # Use the larger of: static safety threshold OR (incoming model + 3GB buffer)
-                effective_threshold = self.vram_safety_gb
-                if required_vram_gb is not None:
-                    effective_threshold = max(self.vram_safety_gb, required_vram_gb + 3.0)
-                if vram_free < effective_threshold:
-                    print(f"⚠️ DMA: CUDA GPU:{gpu_idx} VRAM low ({vram_free:.1f} GB free, need {effective_threshold:.1f} GB)")
-                    while vram_free < effective_threshold and self.model_access_order:
-                        if not self._evict_lru_model():
-                            break
-                        evicted_any = True
-                        vram_free = self._get_vram_free_gb(gpu_idx)
+        # Wrapped in try/except: on Kaggle P100 (sm_60) PyTorch's CUDA runtime
+        # is incompatible and torch.cuda calls can crash the process.
+        try:
+            if torch and torch.cuda.is_available():
+                for gpu_idx in range(torch.cuda.device_count()):
+                    vram_free = self._get_vram_free_gb(gpu_idx)
+                    if vram_free is None:
+                        continue
+                    effective_threshold = self.vram_safety_gb
+                    if required_vram_gb is not None:
+                        effective_threshold = max(self.vram_safety_gb, required_vram_gb + 1.5)
+                    if vram_free < effective_threshold:
+                        print(f"⚠️ DMA: CUDA GPU:{gpu_idx} VRAM low ({vram_free:.1f} GB free, need {effective_threshold:.1f} GB)")
+                        while vram_free < effective_threshold and self.model_access_order:
+                            if not self._evict_lru_model():
+                                break
+                            evicted_any = True
+                            vram_free = self._get_vram_free_gb(gpu_idx)
+        except Exception as e:
+            print(f"⚠️ DMA: CUDA VRAM check skipped ({e})")
 
         # ── Linux sysfs VRAM Check (AMD/Intel Vulkan — no ROCm needed) ──
         sysfs_gpus = self._get_sysfs_gpu_vram()
         for free_gb, total_gb, card_name in sysfs_gpus:
             effective_threshold = self.vram_safety_gb
             if required_vram_gb is not None:
-                effective_threshold = max(self.vram_safety_gb, required_vram_gb + 3.0)
+                effective_threshold = max(self.vram_safety_gb, required_vram_gb + 1.5)
             if free_gb < effective_threshold:
                 print(f"⚠️ DMA: sysfs {card_name} VRAM low ({free_gb:.1f}/{total_gb:.1f} GB free)")
                 while free_gb < effective_threshold and self.model_access_order:
@@ -327,13 +458,20 @@ class AgentOrchestrator:
         gc.collect()
         
         if torch:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
+            except Exception:
+                pass
 
     def _get_model(self, model_key, required_ctx=None):
         """Load a model with Dynamic Memory Allocator protection and dynamic context sizing."""
+        import time
         if required_ctx is None:
             required_ctx = self.context_length if self.context_length > 0 else 8192
 
@@ -350,11 +488,23 @@ class AgentOrchestrator:
                 del self.loaded_models[model_key]
                 if model_key in self.model_access_order:
                     self.model_access_order.remove(model_key)
+                del model_obj
                 gc.collect()
-                import time
-                time.sleep(2)
+                # ⚠️ llama-cpp-python manages its own CUDA context, independent of PyTorch.
+                # On Kaggle P100 (sm_60), PyTorch's CUDA runtime is INCOMPATIBLE and
+                # torch.cuda.synchronize() can segfault the process.
+                # We rely on time.sleep() to let llama.cpp's internal cudaFree() complete.
+                try:
+                    if torch and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass  # Safe to ignore — llama.cpp doesn't use PyTorch's CUDA allocator
                 if torch and hasattr(torch, "xpu") and torch.xpu.is_available():
-                    torch.xpu.empty_cache()
+                    try:
+                        torch.xpu.empty_cache()
+                    except Exception:
+                        pass
+                time.sleep(2)  # Give llama.cpp's async CUDA deallocation time to complete
             else:
                 self._touch_model(model_key)
                 return model_obj
@@ -363,7 +513,51 @@ class AgentOrchestrator:
         # Pass the estimated model size so the DMA evicts enough room for THIS specific model
         est_model_gb = self._estimate_model_size_gb(model_key)
         print(f"📦 DMA: Preparing to load '{model_key}' (~{est_model_gb:.1f} GB)")
-        self._check_memory_pressure(required_vram_gb=est_model_gb)
+        
+        # ── EVM Hot-Swap Guard ────────────────────────────────────────────
+        # On Kaggle P100 (16GB VRAM, 32GB RAM), aggressively flush ALL other models
+        # from VRAM so the incoming model gets 100% of the VRAM KV Cache space.
+        # After EVM flush, skip _check_memory_pressure entirely — EVM guarantees
+        # all VRAM is free, and the pressure check's torch.cuda calls can crash
+        # on P100 (sm_60) where PyTorch's CUDA runtime is incompatible.
+        evm_flushed = False
+        if getattr(self, 'kaggle_hotswap_mode', False) and self.loaded_models:
+            models_to_flush = [mk for mk in list(self.loaded_models.keys()) if mk != model_key]
+            if models_to_flush:
+                for mk in models_to_flush:
+                    print(f"🔄 DMA (EVM Hot-Swap): Unloading '{mk}' from VRAM...")
+                    model_obj = self.loaded_models.pop(mk, None)
+                    if mk in self.model_access_order:
+                        self.model_access_order.remove(mk)
+                    if hasattr(model_obj, 'close'):
+                        try:
+                            model_obj.close()
+                        except Exception:
+                            pass
+                    del model_obj
+                gc.collect()
+                # Use time.sleep instead of torch.cuda.synchronize which crashes on P100
+                try:
+                    if torch and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass  # Safe — llama.cpp manages its own CUDA memory
+                time.sleep(2)  # Let llama.cpp's internal cudaFree() complete
+                # Verify eviction actually freed VRAM
+                try:
+                    free_vram, total_vram = torch.cuda.mem_get_info(0)
+                    free_vram_gb = free_vram / (1024 ** 3)
+                    print(f"✅ DMA (EVM): VRAM after eviction: {free_vram_gb:.1f} GB free / {total_vram/(1024**3):.0f} GB total")
+                except Exception:
+                    pass
+                evm_flushed = True
+            else:
+                evm_flushed = True  # Only our model is loaded, all VRAM is ours
+                
+        # Skip memory pressure check if EVM already cleared VRAM — the pressure
+        # check runs torch.cuda.synchronize() internally which can crash on P100 (sm_60)
+        if not evm_flushed:
+            self._check_memory_pressure(required_vram_gb=est_model_gb)
 
         # ── iGPU Unified Memory Guard ─────────────────────────────────────
         # On Intel Iris Xe (and similar iGPUs), RAM IS VRAM. Loading two 7B
@@ -495,10 +689,20 @@ class AgentOrchestrator:
         """Remove <think>...</think> blocks from DeepSeek R1 / VibeThinker output."""
         if not text:
             return text
-        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        # Also handle unclosed <think> tags (model sometimes forgets to close)
-        cleaned = re.sub(r'<think>.*', '', cleaned, flags=re.DOTALL)
-        cleaned = cleaned.strip()
+            
+        # Handle unclosed <think> tag gracefully
+        if '<think>' in text and '</think>' not in text:
+            before_think, after_think = text.split('<think>', 1)
+            if '```' in after_think:
+                # Close the think block right before the first code fence
+                after_think = after_think.replace('```', '</think>\n```', 1)
+                text = before_think + '<think>' + after_think
+            else:
+                # If there's no code fence, the think block hit the token limit.
+                # Discard the incomplete thought process.
+                return before_think.strip()
+                
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
         
         if cleaned:
             return cleaned
@@ -509,23 +713,67 @@ class AgentOrchestrator:
         return text_without_tags.strip()
 
 
-    def _crunch_prompt(self, prompt, target_model, max_tokens_limit, status_callback=None, router_llm=None):
-        """Compresses a massive prompt safely using the fast Router model."""
-        # Guard: if ctx is smaller than generation headroom, don't try to compress
-        max_tokens_limit = max(512, max_tokens_limit)
-        est_tokens = len(prompt) // 4
-        if est_tokens <= max_tokens_limit:
+    def _crunch_prompt(self, prompt, target_model, prompt_token_budget, status_callback=None, router_llm=None):
+        """Compresses a massive prompt using semantic line boundaries and fast summarization."""
+        # Ensure router is loaded first to use its tokenizer
+        # Use small context for summarization — avoid wasteful VRAM allocation
+        if router_llm is None:
+            router_llm = self._get_model("router", required_ctx=2048)
+
+        # Precise Token Estimation
+        if hasattr(router_llm, "tokenize"):
+            est_tokens = len(router_llm.tokenize(prompt.encode('utf-8')))
+        else:
+            est_tokens = len(prompt) // 3
+
+        # Guard: if the prompt fits inside the budget, no need to compress
+        prompt_token_budget = max(512, prompt_token_budget)
+        if est_tokens <= prompt_token_budget:
             return prompt
             
         if status_callback:
-            status_callback(f"Prompt Cruncher active for {target_model} ({est_tokens} tokens > {max_tokens_limit} max). Compressing...", "warning", target_model, 12)
+            status_callback(f"Semantic Cruncher active for {target_model} ({est_tokens} tokens > {prompt_token_budget} max). Compressing...", "warning", target_model, 12)
             
-        chars_allowed = max_tokens_limit * 4
-        chunk_size = chars_allowed // 3
+        # We need to slice the string, but strictly at newline boundaries to preserve words and code formatting
+        lines = prompt.split('\n')
+        total_chars = sum(len(l) for l in lines)
+        chars_allowed = prompt_token_budget * 3
         
-        start_chunk = prompt[:chunk_size]
-        middle_chunk = prompt[chunk_size:-chunk_size]
-        end_chunk = prompt[-chunk_size:]
+        # 30% of allowed budget at the top, 70% at the bottom
+        top_char_budget = int(chars_allowed * 0.3)
+        bottom_char_budget = int(chars_allowed * 0.7)
+        
+        start_lines = []
+        start_chars = 0
+        in_code_block = False
+        while lines and (start_chars < top_char_budget or in_code_block):
+            line = lines.pop(0)
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
+            start_lines.append(line)
+            start_chars += len(line) + 1
+            
+        end_lines = []
+        end_chars = 0
+        while lines and end_chars < bottom_char_budget:
+            line = lines.pop()
+            end_lines.insert(0, line)
+            end_chars += len(line) + 1
+            
+        # Code-block safety for the bottom chunk (moving backwards)
+        code_blocks = sum(1 for l in end_lines if l.strip().startswith("```"))
+        if code_blocks % 2 != 0:
+            # We sliced through a code block. Keep grabbing lines until we find the opening ```
+            while lines:
+                line = lines.pop()
+                end_lines.insert(0, line)
+                if line.strip().startswith("```"):
+                    break
+            
+        # Whatever is left in 'lines' is the middle chunk that needs summarizing
+        middle_chunk = '\n'.join(lines)
+        start_chunk = '\n'.join(start_lines)
+        end_chunk = '\n'.join(end_lines)
         
         # Safety net: Don't spend hours summarizing a 500MB file
         if len(middle_chunk) > 50000:
@@ -533,9 +781,6 @@ class AgentOrchestrator:
             
         compress_prompt = f"Summarize this middle section concisely. Keep all logic, facts, and code structure intact:\n{middle_chunk}"
         
-        # Reuse pre-loaded router if available, otherwise load it
-        if router_llm is None:
-            router_llm = self._get_model("router", required_ctx=8192)
         if isinstance(router_llm, TransformerWrapper):
             middle_summary = router_llm(compress_prompt, max_tokens=1024)
         else:
@@ -559,14 +804,70 @@ class AgentOrchestrator:
             
         # Context overflow protection for llama-cpp-python
         if hasattr(llm, "n_ctx"):
-            # Estimate tokens: ~4 chars per token + ~50 token buffer
-            est_prompt_tokens = len(prompt) // 4 + 50
-            if system_prompt:
-                est_prompt_tokens += len(system_prompt) // 4
+            ctx = llm.n_ctx()
+            # Precise Token Estimation
+            if hasattr(llm, "tokenize"):
+                est_prompt_tokens = len(llm.tokenize(prompt.encode('utf-8'))) + 120
+                if system_prompt:
+                    est_prompt_tokens += len(llm.tokenize(system_prompt.encode('utf-8')))
+            else:
+                est_prompt_tokens = len(prompt) // 3 + 120
+                if system_prompt:
+                    est_prompt_tokens += len(system_prompt) // 3
+            
+            # Smart token allocation with Model-Aware Minimums
+            is_reasoning = "deepseek" in getattr(llm, "model_path", "").lower()
+            absolute_min = 2048 if is_reasoning else 512
+            
+            if est_prompt_tokens + max_tokens > ctx:
+                # Force a larger generation runway for reasoning models
+                max_tokens = max(absolute_min, ctx - est_prompt_tokens - 50)
+            
+            # If even with minimum generation tokens the prompt doesn't fit, truncate the prompt semantically
+            max_prompt_tokens = ctx - max_tokens - 120
+            if est_prompt_tokens > max_prompt_tokens:
+                chars_allowed = max_prompt_tokens * 3
+                if chars_allowed < 900: chars_allowed = 900
+                
+                lines = prompt.split('\n')
+                top_chars = int(chars_allowed * 0.3)
+                bottom_chars = int(chars_allowed * 0.7)
+                
+                start_lines, end_lines = [], []
+                curr_t, curr_b = 0, 0
+                in_code_block = False
+                
+                while lines and (curr_t < top_chars or in_code_block):
+                    l = lines.pop(0)
+                    if l.strip().startswith("```"):
+                        in_code_block = not in_code_block
+                    start_lines.append(l)
+                    curr_t += len(l) + 1
+                    
+                while lines and curr_b < bottom_chars:
+                    l = lines.pop()
+                    end_lines.insert(0, l)
+                    curr_b += len(l) + 1
+                    
+                # Code-block safety for the bottom chunk
+                code_blocks = sum(1 for l in end_lines if l.strip().startswith("```"))
+                if code_blocks % 2 != 0:
+                    while lines:
+                        l = lines.pop()
+                        end_lines.insert(0, l)
+                        if l.strip().startswith("```"):
+                            break
+                    
+                prompt = '\n'.join(start_lines) + "\n...[TRUNCATED FOR CONTEXT LIMIT]...\n" + '\n'.join(end_lines)
+                if hasattr(llm, "tokenize"):
+                    est_prompt_tokens = len(llm.tokenize(prompt.encode('utf-8'))) + 120
+                else:
+                    est_prompt_tokens = len(prompt) // 3 + 120
+            
             # Ensure we never request more tokens than the available space
-            safe_max = llm.n_ctx() - est_prompt_tokens
-            if safe_max < 10:
-                safe_max = 10 # Desperate fallback
+            safe_max = ctx - est_prompt_tokens
+            if safe_max < 64:
+                safe_max = 64  # Desperate fallback — at least try to get something
             max_tokens = min(max_tokens, safe_max)
 
         messages = []
@@ -606,21 +907,19 @@ class AgentOrchestrator:
             "Classify this query into EXACTLY ONE category. Reply with ONLY the category name.\n\n"
             "SIMPLE — Quick factual answers, greetings, definitions, translations, yes/no questions, fetching latest news/weather/facts.\n"
             "  Examples: 'What is the capital of France?', 'Hi how are you?', 'Define entropy', 'Translate hello to Spanish', 'fetch latest weather news'\n\n"
-            "CODING — Anything that needs writing, fixing, debugging, or executing code in ANY language.\n"
+            "CODING — Prompts that explicitly ask to write, fix, debug, or compile programming code, scripts, websites, databases, or software functions.\n"
             "  Examples: 'Write a Python sort', 'Fix this code', 'Write C code for linked list',\n"
-            "  'Create a script to...', 'Debug this error', 'Build a calculator', 'Implement binary search'\n"
-            "  Keywords: write, code, script, program, implement, debug, fix, compile, function, algorithm, API\n\n"
-            "REASONING — Deep explanations, math proofs, physics theory, science analysis, logic puzzles,\n"
-            "  comparisons, detailed breakdowns, JEE/NEET level problems, step-by-step derivations.\n"
-            "  Examples: 'Explain Newton\'s laws in detail', 'Prove Pythagorean theorem',\n"
-            "  'Why is the sky blue?', 'Compare TCP vs UDP in depth', 'Solve this integral'\n"
-            "  Keywords: explain, prove, derive, analyze, compare, why, how does, in detail, theory\n\n"
+            "  'Create a script to...', 'Debug this error', 'Build a calculator app'\n"
+            "  Keywords: write code, write a script, python, javascript, C++, java, css, html, debug, fix code\n\n"
+            "REASONING — Mathematical calculations, physics simulations/derivations, logic puzzles, theory explanations, science analysis, JEE/NEET questions.\n"
+            "  Note: Even if the query asks to solve equations, simulate a system, calculate trajectories, or visualize/plot a math/scientific concept, it is REASONING unless it explicitly asks to write/fix programming code or scripts.\n"
+            "  Examples: 'Solve this integral', 'Derive Navier-Stokes', 'Explain the Lorenz Attractor and show a 3D plot', 'Calculate projectile trajectory'\n\n"
             "IMPORTANT RULES:\n"
-            "- If the query asks to EXPLAIN something AND write code → CODING\n"
-            "- If the query asks for detailed explanation with visualization → REASONING\n"
+            "- If the query asks to EXPLAIN something AND write/develop programming code/scripts → CODING\n"
+            "- If the query asks for a mathematical calculation, physics simulation, or concept explanation with visualization (but NO explicit request for code/scripts) → REASONING\n"
             "- If the query simply asks to 'fetch', 'get', 'search', or 'scrape' weather, news, or facts from the web without asking to write programming code → SIMPLE or REASONING, NOT CODING.\n"
             "- If unsure between SIMPLE and REASONING → choose REASONING\n"
-            "- If unsure between CODING and REASONING → choose CODING\n\n"
+            "- If unsure between CODING and REASONING → choose REASONING (unless programming code/scripts are explicitly requested)\n\n"
             f"Query: {prompt[:500]}\n\nCategory:"
         )
         result = self._call_model(router_llm, p, max_tokens=10, temperature=0.1)
@@ -629,7 +928,8 @@ class AgentOrchestrator:
         # Override classification if the intent is purely search/weather/news and doesn't ask to create code
         prompt_lower = prompt.lower()
         search_intents = ["fetch from web", "search the web", "search for", "google for", "latest news", "weather news", "current weather", "weather of"]
-        has_code_intent = any(kw in prompt_lower for kw in ["write code", "write a code", "javascript code", "python code", "c++ code", "java code", "html code", "css code", "write a script", "code for", "script to"])
+        code_intent_kws = ["write code", "write a code", "javascript code", "python code", "c++ code", "java code", "html code", "css code", "write a script", "code for", "script to", "build", "implement"]
+        has_code_intent = any(kw in prompt_lower for kw in code_intent_kws)
         
         if any(intent in prompt_lower for intent in search_intents) and not has_code_intent:
             if "REASONING" in upper:
@@ -645,8 +945,8 @@ class AgentOrchestrator:
             return "SIMPLE"
             
         # Fallback: keyword scan on the original prompt for safety
-        code_keywords = ["write code", "write a code", "fix code", "debug", "script", "implement", "program", "compile", "function(", "def ", "class ", "import "]
-        reason_keywords = ["explain", "prove", "derive", "why ", "how does", "in detail", "theory", "analyze", "compare", "solve"]
+        code_keywords = ["write code", "write a code", "fix code", "debug", "script", "program", "compile", "function(", "def ", "class ", "import ", "coding", "develop", "web app", "website"]
+        reason_keywords = ["explain", "prove", "derive", "why ", "how does", "in detail", "theory", "analyze", "compare", "calculate", "solve", "simulate", "trajectory", "numerical", "3d plot", "interactive plot"]
         if any(kw in prompt_lower for kw in code_keywords):
             return "CODING"
         if any(kw in prompt_lower for kw in reason_keywords):
@@ -665,44 +965,62 @@ class AgentOrchestrator:
         result = self._call_model(router_llm, p, max_tokens=10, temperature=0.1)
         return "YES" in str(result).upper()
 
-    def _run_playground(self, model, hypothesis, purpose="logic", status_callback=None):
+    def _run_playground(self, model, hypothesis, purpose="logic", status_callback=None, model_key=None):
         """
         Have a model write a verification script and run it in the sandbox.
         Returns (verified: bool, output: str, test_code: str)
         """
+        coder_model = model
+        # Redirect all playground script writing to the Router to prevent DeepSeek-R1 thinking tokens
+        # from depleting the context window and causing code truncation, or VibeThinker syntax errors.
+        if purpose == "reasoning" or model_key in ["vibethinker", "deepseek_r1"]:
+            coder_model = self._get_model("router", required_ctx=2048)
+
         playground_prompt = (
-            f"Write a Python script (max 40 lines) that {'tests this code logic' if purpose == 'logic' else 'verifies this reasoning'}.\n"
-            "Use assertions and print 'VERIFIED' as the last line if all checks pass.\n\n"
+            f"Write a Python script (max 50 lines) that {'tests this code logic' if purpose == 'logic' else 'verifies this reasoning'}.\n\n"
+            "VERIFICATION RULES:\n"
+            "1. Test the CORE claim/formula with concrete numerical values\n"
+            "2. You MUST strictly adhere to ALL constraints in the original query (e.g. air drag, specific angles, 3D vs 2D). DO NOT SIMPLIFY the physics.\n"
+            "3. You MUST use math.isclose(a, b, rel_tol=1e-3) for ANY floating point comparisons. NEVER use == for floats.\n"
+            "4. Check at least 2 different test cases or boundary conditions\n"
+            "5. Check dimensional consistency (units make sense)\n"
+            "5. Use assert statements with descriptive messages\n"
+            "6. Print 'VERIFIED' as the LAST line ONLY if ALL assertions pass\n"
+            "7. Do NOT print 'VERIFIED' if any assertion fails\n\n"
             "You have access to these scientific tools:\n"
             "  - math, cmath           → Core math operations, trigonometry, constants\n"
             "  - numpy                 → Arrays, linear algebra, matrix operations, statistics\n"
             "  - sympy                 → Symbolic math: algebra, calculus, equation solving, proofs\n"
-            "  - scipy                 → Physics/Biology: scipy.constants, scipy.integrate (systems biology metabolic/enzyme kinetics ODEs, kinematics), scipy.optimize\n"
+            "  - scipy                 → Physics/Biology: scipy.constants, scipy.integrate, scipy.optimize\n"
             "  - pint                  → Unit verification: check that formulas produce correct physical units\n"
             "  - z3 (z3-solver)        → Formal logic & theorem proving: constraint satisfaction, SAT solving\n"
             "  - networkx              → Graph theory: shortest paths, connectivity, circuit analysis\n"
             "  - astropy               → Astrophysics: celestial mechanics, orbital calculations, cosmology\n"
-            "  - Bio (Biopython)       → Bioinformatics: sequence transcription/translation, codon tables, molecular weights, alignments\n"
-            "  - rdkit (RDKit)         → Cheminformatics: molecular structures, chemical bonds, periodic elements, reactions\n"
+            "  - Bio (Biopython)       → Bioinformatics: sequence transcription/translation, codon tables\n"
+            "  - rdkit (RDKit)         → Cheminformatics: molecular structures, chemical bonds\n"
             "  - itertools, collections → Combinatorics, permutations, advanced data structures\n\n"
             "Pick the MOST APPROPRIATE tool for the task. Do NOT import all of them.\n"
             "Do NOT use plotly, matplotlib, pygame, or any GUI.\n"
             "Output ONLY the code in ```python``` blocks.\n\n"
             f"To verify:\n{hypothesis[:2000]}"
         )
-        test_response = self._call_model(model, playground_prompt, max_tokens=1024, temperature=0.1)
+        test_response = self._call_model(coder_model, playground_prompt, max_tokens=4096, temperature=0.1)
         test_code = Sandbox.extract_code(test_response)
-        success, output = self.sandbox.execute(test_code)
+        success, output = self.sandbox.execute(test_code, language='python')
         verified = success and "VERIFIED" in output
         return verified, output, test_code
 
     def _extract_failure_lessons(self, critic_llm, failed_plan, all_errors):
         """Nuclear Reset: extract key lessons from failures for a fresh restart."""
         p = (
-            "These attempts ALL FAILED. Extract 3-5 KEY LESSONS for rewriting:\n\n"
+            "These attempts ALL FAILED. Perform root-cause analysis and extract LESSONS.\n\n"
             f"Plan:\n{failed_plan[:1500]}\n\n"
             f"Errors:\n{all_errors[:1500]}\n\n"
-            "Reply with a numbered list of specific, actionable lessons ONLY."
+            "For each failure, identify:\n"
+            "1. ROOT CAUSE: What exactly went wrong (wrong formula, missing import, logic error, etc.)\n"
+            "2. CORRECT APPROACH: What the correct solution should be\n"
+            "3. VERIFICATION: How to check the fix is right\n\n"
+            "Reply with a numbered list of 3-5 specific, actionable lessons. Be precise."
         )
         lessons = self._call_model(critic_llm, p, max_tokens=512, temperature=0.3)
         return self._strip_thinking(lessons)
@@ -714,14 +1032,16 @@ class AgentOrchestrator:
         if not (cleaned.startswith("<") or "</" in cleaned or "<div" in cleaned.lower() or "<html" in cleaned.lower() or "<script" in cleaned.lower()):
             return False, "Not a valid HTML document (plain text or refusal detected)."
 
-        # Find all script blocks in HTML
-        scripts = re.findall(r'<script\b[^>]*>([\s\S]*?)</script>', html_code)
-        if not scripts:
-            return True, ""
+        # Find all INLINE script blocks (exclude those with src=)
+        scripts = re.findall(r'<script\b(?![^>]*src=)[^>]*>([\s\S]*?)</script>', html_code, flags=re.IGNORECASE)
+        js_code = "\n".join(scripts).strip()
+        
+        if not js_code:
+            return False, "No inline JavaScript logic found. You MUST write the actual simulation logic inside a <script> tag."
             
-        js_code = "\n".join(scripts)
-        if not js_code.strip():
-            return True, ""
+        # Ensure the script actually attempts to render something to prevent blank screens
+        if not any(kw in js_code for kw in ['Plotly.newPlot', 'THREE.', 'getContext', 'document.getElementById', 'document.querySelector']):
+            return False, "The JavaScript logic does not attempt to render anything. You MUST use Plotly.newPlot, THREE.js, or Canvas/DOM APIs to display the simulation."
 
         # Prepend mocks for DOM, Window, THREE, and Plotly to Node.js context.
         # This will bypass typical browser-only ReferenceErrors while letting actual syntax/API bugs throw errors.
@@ -963,13 +1283,16 @@ class AgentOrchestrator:
         if has_python:
             if status_callback:
                 status_callback("Rendering 3D Visualization...", "info", "opencode", 98)
-            viz_success, viz_output = self.sandbox.execute(viz_extract)
+            viz_success, viz_output = self.sandbox.execute(viz_extract, language='python')
 
         def _strip_sandbox_prefix(text):
-            """Remove the 🔒 [Restricted Sandbox] prefix from sandbox output."""
+            """Remove sandbox prefixes from sandbox output."""
             if not text:
                 return text
-            for prefix in ["🔒 [Restricted Sandbox]\n", "🔒 [Restricted Sandbox]"]:
+            for prefix in [
+                "🔒 [Restricted Sandbox]\n", "🔒 [Restricted Sandbox]",
+                "⚠️ [Unrestricted Fallback]\n", "⚠️ [Unrestricted Fallback]"
+            ]:
                 if text.startswith(prefix):
                     return text[len(prefix):]
             return text
@@ -987,12 +1310,24 @@ class AgentOrchestrator:
             if viz_success and not cleaned_check.startswith("{"):
                 error_details = "Code ran successfully but failed to print JSON. Make sure the last line is print(fig.to_json())"
                 
-            fix_p = (
-                f"This Plotly code failed:\n{viz_extract}\n\nError/Output:\n{error_details}\n\n"
-                f"Fix it. REMEMBER: Do NOT use update_scenes(), FigureControls, or plotly.subplots. "
-                f"Use ONLY go.Figure(), go.Surface/Scatter3d, and fig.update_layout(). "
-                f"Output ONLY the corrected script in ```python``` blocks. End with print(fig.to_json())."
-            )
+            if not viz_extract:
+                fix_p = (
+                    "You failed to generate a valid Python code block in your previous attempt.\n\n"
+                    "Please write a complete Python script using plotly for the 3D interactive visualization.\n"
+                    "RULES:\n"
+                    "1. Import plotly.graph_objects as go and numpy as np ONLY\n"
+                    "2. Create a 3D scatter, surface, or line plot\n"
+                    "3. Use fig.update_layout(template='plotly_dark', margin=dict(l=0,r=0,t=40,b=0))\n"
+                    "4. Last line MUST be: print(fig.to_json())\n\n"
+                    f"Topic: {compiled_plan[:2000]}"
+                )
+            else:
+                fix_p = (
+                    f"This Plotly code failed:\n{viz_extract}\n\nError/Output:\n{error_details}\n\n"
+                    "Fix it. REMEMBER: Do NOT use update_scenes(), FigureControls, or plotly.subplots. "
+                    "Use ONLY go.Figure(), go.Surface/Scatter3d, and fig.update_layout(). "
+                    "Output ONLY the corrected script in ```python``` blocks. End with print(fig.to_json())."
+                )
             viz_fixed = self._call_model(
                 coder_llm, 
                 fix_p, 
@@ -1008,13 +1343,16 @@ class AgentOrchestrator:
             
             has_python = "import" in viz_extract or "def " in viz_extract or "fig" in viz_extract
             if has_python:
-                viz_success, viz_output = self.sandbox.execute(viz_extract)
+                viz_success, viz_output = self.sandbox.execute(viz_extract, language='python')
             else:
                 viz_success = False
                 viz_output = "Model failed to output a valid code block."
 
         cleaned_final = _strip_sandbox_prefix(viz_output).strip() if viz_output else ""
         if viz_success and cleaned_final.startswith("{"):
+            # Strip out any Warnings/Stderr block appended by the sandbox
+            if "\nWarnings/Stderr:\n" in cleaned_final:
+                cleaned_final = cleaned_final.split("\nWarnings/Stderr:\n")[0].strip()
             return f"\n\n### 3D Interactive Visualization\n<!--PLOTLY_JSON-->\n{cleaned_final}\n<!--/PLOTLY_JSON-->"
 
         # Final fallback: show the code with error (ensure code blocks are wrapped properly)
@@ -1105,24 +1443,40 @@ class AgentOrchestrator:
             if web_context else f"Current System Date/Time: {current_date}\n\nUser Query:\n{prompt}"
         )
 
-        # ── Dynamic Context Sizing (VRAM-aware) ────────────────────────
+        # ── Dynamic Context Sizing (RAM/VRAM-aware) ────────────────────
         est_tokens = len(enriched_prompt) // 4
-        ctx_cap = self.max_auto_ctx  # VRAM-safe ceiling (4096 on P100, 8192 on larger GPUs)
+        
+        # Calculate dynamic ceilings for each model individually based on post-swap free VRAM & RAM
+        router_ctx_cap = self._get_dynamic_context_ceiling("router")
+        ds_ctx_cap = self._get_dynamic_context_ceiling("deepseek_r1")
+        oc_ctx_cap = self._get_dynamic_context_ceiling("opencode")
+        
         if self.context_length == 0:
-            router_ctx = min(ctx_cap, est_tokens + self.max_tokens)
-            ds_ctx = min(ctx_cap, est_tokens + self.max_tokens)
-            oc_ctx = min(ctx_cap, 4096)
+            router_ctx = min(router_ctx_cap, est_tokens + self.max_tokens)
+            ds_ctx = min(ds_ctx_cap, est_tokens + self.max_tokens)
+            oc_ctx = min(oc_ctx_cap, 8192)
         else:
-            router_ctx = min(self.context_length, ctx_cap)
-            ds_ctx = min(self.context_length, ctx_cap)
-            oc_ctx = min(4096, self.context_length, ctx_cap)
+            router_ctx = min(self.context_length, router_ctx_cap)
+            ds_ctx = min(self.context_length, ds_ctx_cap)
+            oc_ctx = min(8192, self.context_length, oc_ctx_cap)
+            
+        # Ensure context sizing prints to log for easier transparency
+        if getattr(self, 'kaggle_hotswap_mode', False):
+            print(f"📐 DMA (EVM Context Sizing): router_ctx={router_ctx}, ds_ctx={ds_ctx}, oc_ctx={oc_ctx}")
 
-        gen_tokens = min(ctx_cap, 4096)
-        gen_temp = 0.1
+        # gen_tokens must leave room for the prompt inside the context window
+        gen_tokens = 4096
+        
+        # Adaptive Temperature Scaling
+        logic_temp = 0.6  # High for creative logic problem solving
+        gen_temp = 0.1    # Low for strict code writing
 
         # ── Three-Way Classification ─────────────────────────────────────
         router_llm = self._get_model("router", required_ctx=router_ctx)
-        task_type = self._classify_task(router_llm, prompt)
+        if isinstance(mode, str) and mode.upper() in ["SIMPLE", "CODING", "REASONING"]:
+            task_type = mode.upper()
+        else:
+            task_type = self._classify_task(router_llm, prompt)
         if status_callback:
             status_callback(f"Task classified as: {task_type}", "info", "router", 12)
 
@@ -1156,16 +1510,66 @@ class AgentOrchestrator:
     # =====================================================================
     def _coding_pipeline(self, prompt, enriched_prompt, router_llm,
                          router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback=None):
-        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - self.max_tokens, status_callback)
+        logic_temp = 0.6
+        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - self.max_tokens, status_callback, router_llm=router_llm)
 
         # ── Retrieve relevant past experiences from Memory/RAG ────────────
         past_experience = self.memory.recall(prompt, n_results=2)
         if past_experience:
             ds_safe += past_experience
 
-        max_resets = 3
+        max_resets = 2
         lessons = ""
         all_errors = []
+
+        planner_sys = (
+            "You are a world-class scientist, physicist, and software planner.\n"
+            "Your task is to draft a step-by-step logic plan for the user's query.\n\n"
+            "MANDATORY ACCURACY RULES:\n"
+            "1. Physical/Mathematical Rigor: Double-check ALL formulas before writing them. "
+            "Avoid mixing up linear drag (F_d = -c*v) and quadratic drag (F_d = -0.5*C_d*A*rho*v*|v|). "
+            "State all physical constants explicitly. For real-world problems use SI units, but for theoretical "
+            "celestial mechanics/n-body problems (like figure-eight), it is perfectly fine to use normalized units (e.g. G=1, m=1).\n"
+            "2. Complete Multi-Dimensional Coordinates: For 3D problems, decompose EVERY vector "
+            "into all 3 components (x, y, z). Never reduce a 3D problem to 2D unless explicitly stated.\n"
+            "3. Initial Conditions: For well-known problems (three-body figure-eight, double pendulum, "
+            "Lorenz attractor, etc.), use KNOWN PUBLISHED initial conditions from the literature, "
+            "not made-up values. Cite the source or standard reference if possible.\n"
+            "4. Numerical Methods: Specify the exact integration scheme (Euler, RK4, Verlet, etc.), "
+            "time step size, total simulation time, and stopping conditions.\n"
+            "5. Conservation Laws: For any physical simulation, explicitly state which conserved quantities "
+            "(energy, momentum, angular momentum) should be verified and how to check them.\n"
+            "6. OUTPUT FORMAT: Write a numbered list of steps. Each step must state WHAT to compute, "
+            "the EXACT formula, and the expected data structure (array shape, variable names).\n"
+            "7. Think step by step. If you are unsure about any formula, derive it from first principles.\n"
+            "8. IMPORTANT: If 'Relevant past experience' is provided, use it ONLY for structure, formulas, or syntax logic. "
+            "Do NOT copy the specific numeric values, initial conditions, or dimensions from the past experience if they differ "
+            "from the User Query. Always prioritize the User Query's exact variables, launch angles, velocities, and parameters.\n"
+            "9. THINKING CONSTRAINT: Keep your thinking thoughts focused, direct, and concise. Avoid looping over the same constraints. "
+            "Proceed to the planning steps as soon as you have derived the correct approach. Keep your reasoning brief."
+        )
+
+        coder_sys = (
+            "You are an expert computational programmer and software engineer.\n"
+            "Your job is to translate the logic plan into a complete, clean, and immediately runnable Python script.\n\n"
+            "STRICT RULES:\n"
+            "1. Implement equations EXACTLY as described in the plan. Do NOT simplify or approximate.\n"
+            "2. Do NOT write placeholders, mock functions, or abbreviated loop bodies. EVERY line must be real.\n"
+            "3. Handle edge cases: division by zero (add softening epsilon), array bounds, negative sqrt.\n"
+            "4. Print clear, formatted numerical results (e.g., 'Max height: 127.42 m').\n"
+            "5. For simulations: use numpy arrays, vectorized operations where possible.\n"
+            "6. For plotting: use matplotlib or plotly. Always label axes with units.\n"
+            "7. The script MUST run standalone with `python script.py` — no user input, no GUI blocking.\n"
+            "8. Import ONLY what you use. Do not import unused libraries.\n"
+            "9. Add a brief comment above each major section explaining what it does.\n"
+            "10. For conservation checks: compute and print the relative error (|E_final - E_initial|/|E_initial|).\n\n"
+            "=== PLOTLY 3D CHEAT SHEET ===\n"
+            "import plotly.graph_objects as go\n"
+            "fig = go.Figure(data=[go.Scatter3d(x=X, y=Y, z=Z, mode='lines', line=dict(color='cyan', width=2))])\n"
+            "fig.update_layout(template='plotly_dark', margin=dict(l=0, r=0, b=0, t=40))\n"
+            "print(fig.to_json()) # ALWAYS print json for the UI to render\n"
+            "============================="
+        )
 
         for reset in range(max_resets):
             # ── Phase 1: DeepSeek Logic Plan ─────────────────────────────
@@ -1176,13 +1580,17 @@ class AgentOrchestrator:
             ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
             plan_p = f"Create a step-by-step logic plan:\n{ds_safe}"
             if lessons:
-                plan_p += f"\n\nLESSONS FROM PREVIOUS FAILURES:\n{lessons}"
-            ds_draft = self._strip_thinking(self._call_model(ds_llm, plan_p, gen_tokens, gen_temp))
+                plan_p += f"\n\nLESSONS FROM PREVIOUS FAILURES:\n{lessons[:800]}"
+            # Safety: truncate prompt to leave room for generation
+            max_plan_prompt_chars = (ds_ctx - gen_tokens - 200) * 3
+            if len(plan_p) > max_plan_prompt_chars > 300:
+                plan_p = plan_p[:max_plan_prompt_chars]
+            ds_draft = self._strip_thinking(self._call_model(ds_llm, plan_p, gen_tokens, logic_temp, system_prompt=planner_sys))
 
             # ── Phase 2: Reasoning Sandbox — Verify Logic ────────────────
             if status_callback:
                 status_callback("Reasoning Sandbox: Verifying logic...", "info", "deepseek_r1", 30)
-            verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic")
+            verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key="deepseek_r1")
 
             if not verified:
                 if status_callback:
@@ -1192,8 +1600,8 @@ class AgentOrchestrator:
                     f"Logic plan FAILED verification.\nPlan:\n{ds_draft[:2000]}\n"
                     f"Error:\n{pg_out[:1000]}\nRewrite a corrected logic plan."
                 )
-                ds_draft = self._strip_thinking(self._call_model(vibe_llm, fix_p, gen_tokens, gen_temp))
-                v2, _, _ = self._run_playground(vibe_llm, ds_draft, "logic")
+                ds_draft = self._strip_thinking(self._call_model(vibe_llm, fix_p, gen_tokens, logic_temp, system_prompt=planner_sys))
+                v2, _, _ = self._run_playground(vibe_llm, ds_draft, "logic", model_key="vibethinker")
                 if v2 and status_callback:
                     status_callback("VibeThinker corrected the logic!", "success", "vibethinker", 40)
                 elif status_callback:
@@ -1208,8 +1616,11 @@ class AgentOrchestrator:
             if status_callback:
                 status_callback("VibeThinker writing code...", "info", "vibethinker", 50)
             vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
-            code_p = f"Write a complete Python script for this plan:\n{compiled_plan}\n\nWrap in ```python```."
-            code = Sandbox.extract_code(self._strip_thinking(self._call_model(vibe_llm, code_p, gen_tokens, gen_temp)))
+            # Truncate compiled_plan to fit context
+            max_code_prompt_chars = (ds_ctx - gen_tokens - 200) * 3
+            plan_for_code = compiled_plan[:max(max_code_prompt_chars, 1500)] if len(compiled_plan) > max_code_prompt_chars else compiled_plan
+            code_p = f"Write a complete Python script for this plan:\n{plan_for_code}\n\nWrap in ```python```."
+            code = Sandbox.extract_code(self._strip_thinking(self._call_model(vibe_llm, code_p, gen_tokens, gen_temp, system_prompt=coder_sys)))
 
             # ── Phase 4: Execution Sandbox ───────────────────────────────
             if status_callback:
@@ -1221,32 +1632,28 @@ class AgentOrchestrator:
                 viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
                 return f"### Logic Plan (Verified)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
 
-            # ── Phase 5: Shallow Fix (VibeThinker) ───────────────────────
-            if status_callback:
-                status_callback("VibeThinker fixing code...", "warning", "vibethinker", 72)
-            failed_code = code
-            failed_error = output
-            fix_p = f"Code failed:\n{code}\n\nError:\n{output}\n\nFix it. Output in ```python```."
-            code = Sandbox.extract_code(self._strip_thinking(self._call_model(vibe_llm, fix_p, gen_tokens, gen_temp)))
-            ok, output = self.sandbox.execute(code)
-            if ok:
-                self.memory.save(prompt, code)
-                self.memory.save_mistake(prompt, failed_code, failed_error, code)
-                router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
-                viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-                return f"### Logic Plan (Verified)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
-
-            # ── Phase 6: Deep Escalation (VibeThinker — stronger prompt) ─
-            if status_callback:
-                status_callback("Deep Escalation: VibeThinker rewriting...", "warning", "vibethinker", 80)
-            esc_p = (
-                f"Code failed TWICE. You MUST fix it.\nPlan:\n{compiled_plan[:1500]}\n"
-                f"Code:\n{code}\nError:\n{output}\n"
-                f"Rewrite the ENTIRE script from scratch in ```python```. Think step by step."
-            )
-            esc_resp = self._strip_thinking(self._call_model(vibe_llm, esc_p, gen_tokens, gen_temp))
-            if "```" in esc_resp:
-                code = Sandbox.extract_code(esc_resp)
+            # ── Phase 5 & 6: Reflexion Loops (Only run during initial draft, not during Nuclear Reset) ──
+            if reset == 0:
+                # ── Phase 5: Shallow Fix (VibeThinker) ───────────────────────
+                if status_callback:
+                    status_callback("VibeThinker fixing code...", "warning", "vibethinker", 72)
+                failed_code = code
+                failed_error = output
+                # Structured error analysis for smarter fixing
+                safe_code = code[:2000] if len(code) > 2000 else code
+                safe_error = output[:800] if len(output) > 800 else output
+                fix_p = (
+                    f"The following Python code FAILED with an error.\n\n"
+                    f"CODE:\n{safe_code}\n\n"
+                    f"ERROR:\n{safe_error}\n\n"
+                    f"INSTRUCTIONS:\n"
+                    f"1. Identify the exact line and cause of the error\n"
+                    f"2. Fix ONLY the bug — do not rewrite unrelated parts\n"
+                    f"3. Make sure all imports are present\n"
+                    f"4. Test edge cases (division by zero, empty arrays, etc.)\n"
+                    f"5. Output the COMPLETE corrected script in ```python``` blocks."
+                )
+                code = Sandbox.extract_code(self._strip_thinking(self._call_model(vibe_llm, fix_p, gen_tokens, gen_temp, system_prompt=coder_sys)))
                 ok, output = self.sandbox.execute(code)
                 if ok:
                     self.memory.save(prompt, code)
@@ -1255,14 +1662,97 @@ class AgentOrchestrator:
                     viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
                     return f"### Logic Plan (Verified)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
 
+                # ── Phase 6: Deep Escalation (DeepSeek-R1 — rewrite script) ──
+                if status_callback:
+                    status_callback("Deep Escalation: DeepSeek-R1 rewriting...", "warning", "deepseek_r1", 80)
+                ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                esc_p = (
+                    f"Code failed TWICE. You MUST fix it.\nPlan:\n{compiled_plan[:1500]}\n"
+                    f"Code:\n{code[:2000]}\nError:\n{output[:800]}\n"
+                    f"Rewrite the ENTIRE script from scratch in ```python```. Think step by step."
+                )
+                esc_resp = self._strip_thinking(self._call_model(ds_llm, esc_p, gen_tokens, gen_temp, system_prompt=coder_sys))
+                if "```" in esc_resp:
+                    code = Sandbox.extract_code(esc_resp)
+                    ok, output = self.sandbox.execute(code)
+                    if ok:
+                        self.memory.save(prompt, code)
+                        self.memory.save_mistake(prompt, failed_code, failed_error, code)
+                        router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                        viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+                        return f"### Logic Plan (Verified)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
+
             # ── Phase 7: Nuclear Reset ───────────────────────────────────
             all_errors.append(f"Round {reset+1}: {output[:500]}")
             if reset < max_resets - 1:
                 if status_callback:
-                    status_callback(f"Nuclear Reset: Extracting lessons...", "error", "vibethinker", 85)
-                lessons = self._extract_failure_lessons(vibe_llm, compiled_plan, "\n".join(all_errors))
+                    status_callback(f"Nuclear Reset: Extracting lessons...", "error", "deepseek_r1", 85)
+                ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                lessons = self._extract_failure_lessons(ds_llm, compiled_plan, "\n".join(all_errors))
 
-        # All resets exhausted
+        # All resets exhausted -> Emergency Web Search Healing fallback
+        if status_callback:
+            status_callback("Main pipeline failed. Activating Emergency Web Search...", "warning", "system", 90)
+        try:
+            error_lines = [line.strip() for line in output.split('\n') if line.strip()]
+            error_query = error_lines[-1] if error_lines else output[:100]
+            if len(error_query) > 120:
+                error_query = error_query[-120:]
+            
+            # Construct a highly relevant search term combining prompt keywords and error
+            clean_prompt_query = " ".join([word for word in prompt.split() if len(word) > 3][:8])
+            search_term = f"{clean_prompt_query} {error_query}"
+            if len(search_term) > 150:
+                search_term = search_term[:150]
+
+            if status_callback:
+                status_callback(f"Searching: '{search_term}'...", "info", "system", 92)
+            web_results = self.web_search.search(search_term, max_results=2)
+            emergency_context = ""
+            if web_results:
+                emergency_context = "\n".join([f"- {r.get('title')}: {r.get('snippet', '')}" for r in web_results])
+            if emergency_context:
+                if status_callback:
+                    status_callback("Emergency context acquired. Rewriting script...", "info", "deepseek_r1", 95)
+                ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                emergency_prompt = (
+                    f"The previous attempts failed with the following traceback:\n"
+                    f"{output[:800]}\n\n"
+                    f"We searched the web for this error and found the following references:\n"
+                    f"{emergency_context}\n\n"
+                    f"Using this information, rewrite the complete functional Python script to fix the error.\n"
+                    f"Original plan:\n{compiled_plan[:1500]}\n\n"
+                    f"Output the complete script in a ```python``` block."
+                )
+                esc_resp = self._strip_thinking(self._call_model(ds_llm, emergency_prompt, gen_tokens, gen_temp, system_prompt=coder_sys))
+                if "```" in esc_resp:
+                    code = Sandbox.extract_code(esc_resp)
+                    ok, output = self.sandbox.execute(code)
+                    if not ok:
+                        # Attempt exactly 1 round of playground correction for emergency healing
+                        if status_callback:
+                            status_callback("Emergency script failed. Attempting 1 correction round...", "warning", "deepseek_r1", 97)
+                        patch_prompt = (
+                            f"The emergency script failed with the following traceback/error:\n{output[:800]}\n\n"
+                            f"Original code:\n{code[:1500]}\n\n"
+                            f"Using this traceback, rewrite the complete functional Python script to fix the error.\n"
+                            f"Output only the complete corrected script in a ```python``` block."
+                        )
+                        patch_resp = self._strip_thinking(self._call_model(ds_llm, patch_prompt, gen_tokens, gen_temp, system_prompt=coder_sys))
+                        if "```" in patch_resp:
+                            code = Sandbox.extract_code(patch_resp)
+                            ok, output = self.sandbox.execute(code)
+                    if ok:
+                        if status_callback:
+                            status_callback("Emergency Search Healing SUCCESSFUL!", "success", "deepseek_r1", 100)
+                        self.memory.save(prompt, code)
+                        self.memory.save_mistake(prompt, failed_code, failed_error, code)
+                        router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                        viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+                        return f"### Logic Plan (Verified via Emergency Search)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
+        except Exception as es:
+            print(f"Emergency web search recovery failed: {es}")
+
         if status_callback:
             status_callback("Max retries reached.", "error", "system", 100)
         return f"### Logic Plan\n{compiled_plan}\n\n### Execution Failed\n{output}\n\n### Code\n```python\n{code}\n```"
@@ -1272,20 +1762,41 @@ class AgentOrchestrator:
     # =====================================================================
     def _reasoning_pipeline(self, prompt, enriched_prompt, router_llm,
                             router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback=None):
-        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - self.max_tokens, status_callback)
+        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - self.max_tokens, status_callback, router_llm=router_llm)
 
         # ── Retrieve relevant past experiences from Memory/RAG ────────────
         past_experience = self.memory.recall(prompt, n_results=2)
         if past_experience:
             ds_safe += past_experience
 
-        ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
-
         # ── Check: Can this be playground-verified? ──────────────────────
+        # Must check this BEFORE loading ds_llm to prevent EVM from evicting router_llm
         use_playground = self._is_playground_applicable(router_llm, prompt)
         if status_callback:
             mode = "Playground-Verified" if use_playground else "LLM Debate"
             status_callback(f"Reasoning mode: {mode}", "info", "router", 15)
+
+        ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+
+        reasoning_sys = (
+            "You are a rigorous scientific researcher and expert logic reasoner.\n\n"
+            "ACCURACY REQUIREMENTS:\n"
+            "1. Think step by step. Show your work for every derivation.\n"
+            "2. State all assumptions explicitly at the beginning.\n"
+            "3. Define all variables with their units before using them.\n"
+            "4. For physics: verify dimensional consistency of every equation.\n"
+            "5. For math: check boundary conditions and special cases.\n"
+            "6. Avoid common traps: linear vs. quadratic drag, 2D vs. 3D decomposition, "
+            "sign conventions, reference frame consistency.\n"
+            "7. If you cite a formula, state where it comes from (Newton's 2nd law, etc.).\n"
+            "8. Complete ALL derivations fully — do not skip steps or say 'it can be shown that'.\n"
+            "9. If uncertain about a specific value or fact, say so explicitly rather than guessing.\n"
+            "10. IMPORTANT: If 'Relevant past experience' is provided, use it ONLY for structure, formulas, or syntax logic. "
+            "Do NOT copy the specific numeric values, initial conditions, or dimensions from the past experience if they differ "
+            "from the User Query. Always prioritize the User Query's exact variables, launch angles, velocities, and parameters.\n"
+            "11. THINKING CONSTRAINT: Be concise, structured, and focused in your thinking thoughts. Avoid looping or repeating the "
+            "same mathematical derivations. State your reasoning path clearly and proceed directly to the solution once verified."
+        )
 
         if use_playground:
             # ── Playground-Verified Reasoning (with Nuclear Reset) ────────
@@ -1294,62 +1805,163 @@ class AgentOrchestrator:
             all_errors = []
 
             for reset in range(max_resets):
-                max_rounds = 3
+                max_rounds = 2 if reset == 0 else 1
                 ds_answer = ""
                 for rnd in range(max_rounds):
+                    # Re-acquire ds_llm because VibeThinker may have evicted it in the previous round
+                    ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
                     if status_callback:
-                        lbl = f"Nuclear Reset #{reset}: DeepSeek-R1 re-reasoning..." if reset else "DeepSeek-R1 reasoning + playground..."
+                        lbl = f"Nuclear Reset #{reset} (Attempt {rnd+1}/{max_rounds}): DeepSeek-R1 re-reasoning..." if reset else f"DeepSeek-R1 reasoning + playground (Attempt {rnd+1}/{max_rounds})..."
                         status_callback(lbl, "info" if not reset else "warning", "deepseek_r1", 25 + rnd*12)
                     draft_p = f"Provide a detailed, rigorous answer:\n{ds_safe}"
                     if rnd > 0:
                         draft_p += "\n\nYour previous answer had errors. Rewrite from scratch."
                     if lessons:
-                        draft_p += f"\n\nLESSONS FROM PREVIOUS FAILURES:\n{lessons}"
-                    ds_answer = self._strip_thinking(self._call_model(ds_llm, draft_p, gen_tokens, gen_temp))
+                        draft_p += f"\n\nLESSONS FROM PREVIOUS FAILURES:\n{lessons[:800]}"
+                    # Safety: truncate prompt to leave room for generation
+                    max_reason_chars = (ds_ctx - gen_tokens - 200) * 3
+                    if len(draft_p) > max_reason_chars > 300:
+                        draft_p = draft_p[:max_reason_chars]
+                    ds_answer = self._strip_thinking(self._call_model(ds_llm, draft_p, gen_tokens, gen_temp, system_prompt=reasoning_sys))
 
                     if status_callback:
-                        status_callback("Verifying in Reasoning Playground...", "info", "deepseek_r1", 35 + rnd*12)
-                    verified, pg_out, _ = self._run_playground(ds_llm, ds_answer, "reasoning")
+                        status_callback(f"Verifying in Reasoning Playground (Attempt {rnd+1}/{max_rounds})...", "info", "deepseek_r1", 35 + rnd*12)
+                    verified, pg_out, test_code = self._run_playground(ds_llm, ds_answer, "reasoning", model_key="deepseek_r1")
 
                     if verified:
                         if status_callback:
                             status_callback("Reasoning VERIFIED!", "success", "deepseek_r1", 80)
+                        self.memory.save(prompt, ds_answer)
                         router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
                         viz = self._check_3d_gate(prompt, ds_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-                        return f"### Verified Answer\n{ds_answer}{viz}"
+                        verification_block = (
+                            f"\n\n### Computational Verification\n"
+                            f"```python\n{test_code}\n```\n\n"
+                            f"**Verification Output:**\n"
+                            f"```text\n{pg_out}\n```"
+                        )
+                        return f"### Verified Answer\n{ds_answer}{verification_block}{viz}"
 
-                    # VibeThinker tries to fix
+                    # DeepSeek-R1-7B corrects its own draft (zero model swap latency)
                     if status_callback:
-                        status_callback("VibeThinker correcting reasoning...", "warning", "vibethinker", 45 + rnd*12)
-                    vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
+                        status_callback(f"DeepSeek-R1 correcting reasoning (Attempt {rnd+1}/{max_rounds})...", "warning", "deepseek_r1", 45 + rnd*12)
                     vibe_p = (
                         f"This answer failed verification.\nAnswer:\n{ds_answer[:2000]}\n"
                         f"Error:\n{pg_out[:1000]}\nProvide a corrected, complete answer."
                     )
-                    vibe_answer = self._strip_thinking(self._call_model(vibe_llm, vibe_p, gen_tokens, gen_temp))
-                    v2, _, _ = self._run_playground(vibe_llm, vibe_answer, "reasoning")
+                    ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                    vibe_answer = self._strip_thinking(self._call_model(ds_llm, vibe_p, gen_tokens, gen_temp, system_prompt=reasoning_sys))
+                    v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
                     if v2:
                         if status_callback:
-                            status_callback("VibeThinker's correction VERIFIED!", "success", "vibethinker", 80)
+                            status_callback("DeepSeek-R1's correction VERIFIED!", "success", "deepseek_r1", 80)
+                        self.memory.save(prompt, vibe_answer)
+                        self.memory.save_mistake(prompt, ds_answer, pg_out, vibe_answer)
                         router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
                         viz = self._check_3d_gate(prompt, vibe_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-                        return f"{vibe_answer}{viz}"
-                    ds_safe = f"{ds_safe}\n\nPrevious errors: {pg_out[:500]}"
+                        verification_block = (
+                            f"\n\n### Computational Verification\n"
+                            f"```python\n{vibe_test_code}\n```\n\n"
+                            f"**Verification Output:**\n"
+                            f"```text\n{vibe_pg_out}\n```"
+                        )
+                        return f"### Verified Answer\n{vibe_answer}{verification_block}{viz}"
+                    # Don't let ds_safe grow unboundedly — cap the appended errors
+                    error_summary = pg_out[:300]
+                    if len(ds_safe) + len(error_summary) < (ds_ctx - gen_tokens - 200) * 3:
+                        ds_safe = f"{ds_safe}\n\nPrevious errors: {error_summary}"
+                    # else: silently skip appending to prevent overflow
 
                 # ── Nuclear Reset: extract lessons and restart ────────────
                 all_errors.append(f"Reset {reset+1}: {pg_out[:500]}")
                 if reset < max_resets - 1:
                     if status_callback:
-                        status_callback("Nuclear Reset: Extracting lessons from failures...", "error", "vibethinker", 85)
-                    vibe_llm = self._get_model("vibethinker", required_ctx=ds_ctx)
-                    lessons = self._extract_failure_lessons(vibe_llm, ds_answer, "\n".join(all_errors))
+                        status_callback("Nuclear Reset: Extracting lessons from failures...", "error", "deepseek_r1", 85)
+                    ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                    lessons = self._extract_failure_lessons(ds_llm, ds_answer, "\n".join(all_errors))
 
-            # All resets exhausted — return best effort
+            # All resets exhausted -> Emergency Web Search Healing fallback
             if status_callback:
-                status_callback("Max retries reached. Returning best effort.", "warning", "system", 90)
+                status_callback("Main pipeline failed. Activating Emergency Web Search...", "warning", "system", 90)
+            try:
+                # Construct a search query combining prompt keywords and python output/error
+                # Extract clean prompt keywords to keep it highly contextual
+                clean_prompt_query = " ".join([word for word in prompt.split() if len(word) > 3][:8])
+                error_lines = [line.strip() for line in pg_out.split('\n') if line.strip()]
+                error_query = error_lines[-1] if error_lines else pg_out[:100]
+                if len(error_query) > 120:
+                    error_query = error_query[-120:]
+                
+                # Combine them into a highly relevant search term
+                search_term = f"{clean_prompt_query} {error_query}"
+                if len(search_term) > 150:
+                    search_term = search_term[:150]
+
+                if status_callback:
+                    status_callback(f"Searching: '{search_term}'...", "info", "system", 92)
+                web_results = self.web_search.search(search_term, max_results=2)
+                emergency_context = ""
+                if web_results:
+                    emergency_context = "\n".join([f"- {r.get('title')}: {r.get('snippet', '')}" for r in web_results])
+                if emergency_context:
+                    if status_callback:
+                        status_callback("Emergency context acquired. Final reasoning correction...", "info", "deepseek_r1", 95)
+                    ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                    emergency_prompt = (
+                        f"The reasoning explanation failed sandbox verification with the error:\n"
+                        f"{pg_out[:500]}\n\n"
+                        f"We found the following context online for this issue:\n"
+                        f"{emergency_context}\n\n"
+                        f"Correct the derivation/calculation to fix this issue, and formulate the final detailed explanation.\n"
+                        f"Failed Draft:\n{ds_answer[:1500]}"
+                    )
+                    vibe_answer = self._strip_thinking(self._call_model(ds_llm, emergency_prompt, gen_tokens, gen_temp, system_prompt=reasoning_sys))
+                    v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
+                    if not v2:
+                        # Attempt exactly 1 round of playground correction for emergency healing
+                        if status_callback:
+                            status_callback("Emergency verification failed. Attempting 1 correction round...", "warning", "deepseek_r1", 97)
+                        corr_prompt = (
+                            f"The emergency explanation failed verification with this traceback:\n"
+                            f"{vibe_pg_out[:800]}\n\n"
+                            f"Explanation:\n{vibe_answer[:1500]}\n\n"
+                            f"Correct the derivation or logic to fix this error, and provide the complete corrected explanation."
+                        )
+                        ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                        vibe_answer = self._strip_thinking(self._call_model(ds_llm, corr_prompt, gen_tokens, gen_temp, system_prompt=reasoning_sys))
+                        v2, vibe_pg_out, vibe_test_code = self._run_playground(ds_llm, vibe_answer, "reasoning", model_key="deepseek_r1")
+                    if v2:
+                        if status_callback:
+                            status_callback("Emergency Search Healing SUCCESSFUL!", "success", "deepseek_r1", 100)
+                        self.memory.save(prompt, vibe_answer)
+                        self.memory.save_mistake(prompt, ds_answer, pg_out, vibe_answer)
+                        router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                        viz = self._check_3d_gate(prompt, vibe_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+                        verification_block = (
+                            f"\n\n### Computational Verification (Emergency Healed)\n"
+                            f"```python\n{vibe_test_code}\n```\n\n"
+                            f"**Verification Output:**\n"
+                            f"```text\n{vibe_pg_out}\n```"
+                        )
+                        return f"### Verified Answer\n{vibe_answer}{verification_block}{viz}"
+            except Exception as es:
+                print(f"Emergency reasoning search recovery failed: {es}")
+
+            final_ans = vibe_answer if 'vibe_answer' in locals() else ds_answer
+            final_test = vibe_test_code if 'vibe_test_code' in locals() else test_code
+            final_out = vibe_pg_out if 'vibe_pg_out' in locals() else pg_out
+
+            if status_callback:
+                status_callback("Max retries reached. Returning best effort.", "warning", "system", 98)
             router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
-            viz = self._check_3d_gate(prompt, ds_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
-            return f"{ds_answer}{viz}"
+            viz = self._check_3d_gate(prompt, final_ans, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+            verification_block = (
+                f"\n\n### Computational Verification (Failed)\n"
+                f"```python\n{final_test}\n```\n\n"
+                f"**Verification Output:**\n"
+                f"```text\n{final_out}\n```"
+            )
+            return f"### Best Effort Answer\n{final_ans}{verification_block}{viz}"
 
         else:
             # ── Standard LLM Debate (non-testable reasoning) ─────────────

@@ -31,6 +31,12 @@ LOOP_PATTERNS = [
 # ── Language Detection Heuristics ────────────────────────────────────────
 # Strong indicators for each supported language
 LANG_SIGNATURES = {
+    'python': {
+        'strong': [r'^\s*import\s+\w+', r'^\s*from\s+\w+\s+import', r'def\s+\w+\s*\(', r'if\s+__name__\s*==\s*[\'"]__main__[\'"]', r'print\s*\(.*\)'],
+        'ext': '.py',
+        'compile': None,
+        'run': [sys.executable, '{src}'],
+    },
     'c': {
         'strong': [r'#include\s*<\w+\.h>', r'int\s+main\s*\(', r'printf\s*\(', r'scanf\s*\(', r'malloc\s*\(', r'free\s*\('],
         'ext': '.c',
@@ -62,6 +68,24 @@ LANG_SIGNATURES = {
         'compile': ['javac', '{src}'],
         'run': ['java', '-cp', '{dir}', '{classname}'],
     },
+    'go': {
+        'strong': [r'^package\s+main\b', r'import\s+\(\s*"fmt"', r'func\s+main\s*\(\)'],
+        'ext': '.go',
+        'compile': ['go', 'build', '-o', '{bin}', '{src}'],
+        'run': ['{bin}'],
+    },
+    'rust': {
+        'strong': [r'fn\s+main\s*\(\)', r'println!\s*\(', r'use\s+std::'],
+        'ext': '.rs',
+        'compile': ['rustc', '{src}', '-o', '{bin}'],
+        'run': ['{bin}'],
+    },
+    'typescript': {
+        'strong': [r'\binterface\s+\w+\b', r'\btype\s+\w+\s*=', r'console\.log\s*\('],
+        'ext': '.ts',
+        'compile': None,
+        'run': ['ts-node', '{src}'],
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -79,16 +103,24 @@ import json
 # ── Step 1: Set Resource Limits (Linux only) ─────────────────────────────
 try:
     import resource
-    # Max 1 GB RAM (enough for numpy/pandas heavy workloads)
-    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
-    # Max 120 seconds of CPU time (enough for complex computation)
+    # Max 2 GB RAM (enough for numpy/pandas heavy workloads and complex physics/biology simulation solvers)
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+    # Max 30 seconds of CPU time to aggressively kill infinite loops
+    # Increased to 120 seconds for heavier simulations
     resource.setrlimit(resource.RLIMIT_CPU, (120, 120))
-    # Max 50 child processes (allows multiprocessing but blocks fork bombs)
-    resource.setrlimit(resource.RLIMIT_NPROC, (50, 50))
+    # Max 200 child processes (allows multiprocessing but blocks fork bombs)
+    resource.setrlimit(resource.RLIMIT_NPROC, (200, 200))
     # Max 100 MB file writes (allows data output but prevents disk flooding)
     resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
 except Exception:
     pass  # Non-Linux systems skip resource limits
+
+# ── Step 1.5: Hard Block Network Access ──────────────────────────────────
+import socket
+class BlockedSocket:
+    def __init__(self, *args, **kwargs):
+        raise PermissionError("Network access is strictly forbidden in the sandbox.")
+socket.socket = BlockedSocket
 
 # ── Step 2: Define the Whitelist of Safe Modules ─────────────────────────
 ALLOWED_MODULES = {
@@ -119,6 +151,10 @@ ALLOWED_MODULES = {
     'networkx',
     # Astrophysics & Celestial Mechanics
     'astropy',
+    # Bioinformatics & Cheminformatics
+    'Bio', 'rdkit',
+    # Quantum Physics & Rocket Dynamics
+    'rocketpy', 'qiskit', 'qutip',
     # Web & API requests (for real-time weather and stock prediction data)
     'requests', 'urllib', 'http',
 }
@@ -194,8 +230,8 @@ try:
     result["output"] = captured_stdout.getvalue()
     if captured_stderr.getvalue():
         result["output"] += "\nWarnings/Stderr:\n" + captured_stderr.getvalue()
-except ImportError as e:
-    # Module was blocked — signal the caller to retry with unrestricted mode
+except (ImportError, PermissionError) as e:
+    # Module was blocked or network was accessed — signal the caller to retry with unrestricted mode
     result["success"] = False
     result["error"] = str(e)
     result["restricted_block"] = True
@@ -213,7 +249,7 @@ print(json.dumps(result))
 
 
 class Sandbox:
-    def __init__(self, timeout=60):
+    def __init__(self, timeout=120):
         self.timeout = timeout
 
     def _detect_gui(self, code):
@@ -420,6 +456,18 @@ class Sandbox:
         - Layer 2: Restricted builtins (no open/exec/eval/import of OS modules)
         - Layer 3: Resource limits (RAM/CPU/disk caps prevent DoS attacks)
         """
+        # Pre-check for syntax/truncation errors
+        try:
+            import ast
+            ast.parse(code)
+        except SyntaxError as e:
+            return False, (
+                f"SyntaxError: {e.msg} at line {e.lineno}.\n"
+                f"CRITICAL: Your code was likely truncated (cut off mid-sentence) or contains unbalanced braces/quotes.\n"
+                f"Ensure all strings, functions, quotes, and brackets are fully closed.\n"
+                f"Write shorter, more concise code if necessary to avoid hitting output limits."
+            )
+
         # Write the AI's code to a temp file
         code_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
         code_file.write(code)
@@ -549,17 +597,17 @@ class Sandbox:
 
         # 1. Try language-specific closed code blocks first
         lang_patterns = [
-            (r"```html\s*(.*?)\s*```", 'html'),
-            (r"```python\s*(.*?)\s*```", 'python'),
-            (r"```py\s*(.*?)\s*```", 'python'),
-            (r"```c\+\+\s*(.*?)\s*```", 'cpp'),
-            (r"```cpp\s*(.*?)\s*```", 'cpp'),
-            (r"```c\s*(.*?)\s*```", 'c'),
-            (r"```bash\s*(.*?)\s*```", 'bash'),
-            (r"```sh\s*(.*?)\s*```", 'bash'),
-            (r"```javascript\s*(.*?)\s*```", 'javascript'),
-            (r"```js\s*(.*?)\s*```", 'javascript'),
-            (r"```java\s*(.*?)\s*```", 'java'),
+            (r"```\s*html\s*(.*?)\s*```", 'html'),
+            (r"```\s*python\s*(.*?)\s*```", 'python'),
+            (r"```\s*py\s*(.*?)\s*```", 'python'),
+            (r"```\s*c\+\+\s*(.*?)\s*```", 'cpp'),
+            (r"```\s*cpp\s*(.*?)\s*```", 'cpp'),
+            (r"```\s*c\s*(.*?)\s*```", 'c'),
+            (r"```\s*bash\s*(.*?)\s*```", 'bash'),
+            (r"```\s*sh\s*(.*?)\s*```", 'bash'),
+            (r"```\s*javascript\s*(.*?)\s*```", 'javascript'),
+            (r"```\s*js\s*(.*?)\s*```", 'javascript'),
+            (r"```\s*java\s*(.*?)\s*```", 'java'),
         ]
 
         for pattern, lang in lang_patterns:

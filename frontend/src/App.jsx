@@ -2,34 +2,93 @@ import React, { useState, useEffect, useRef } from "react";
 import "./index.css";
 
 /* ═══════════════════════════════════════════════════
+   KATEX DEFERRED LOADING HOOK
+   KaTeX loads with defer for faster page startup.
+   This hook triggers a re-render when KaTeX finishes
+   loading, so math formulas auto-render (Gemini-style).
+   ═══════════════════════════════════════════════════ */
+const useKatexReady = () => {
+  const [ready, setReady] = useState(!!window.katex);
+  useEffect(() => {
+    if (window.katex) { setReady(true); return; }
+    const onReady = () => setReady(true);
+    window.addEventListener('katex-ready', onReady);
+    return () => window.removeEventListener('katex-ready', onReady);
+  }, []);
+  return ready;
+};
+
+/* ═══════════════════════════════════════════════════
    PLOTLY 3D CHART COMPONENT
    ═══════════════════════════════════════════════════ */
 const PlotlyChart = ({ jsonStr }) => {
   const chartRef = useRef(null);
-  const plotted = useRef(false);
+  const [errorMsg, setErrorMsg] = useState(null);
 
   useEffect(() => {
-    if (!chartRef.current || plotted.current) return;
+    if (!chartRef.current) return;
+    setErrorMsg(null);
     try {
       const fig = JSON.parse(jsonStr);
+      
+      // Clear fixed width and height from backend to let CSS control size
+      if (fig.layout) {
+        delete fig.layout.width;
+        delete fig.layout.height;
+      }
+
       const layout = {
         ...fig.layout,
+        autosize: true,
         template: "plotly_dark",
         paper_bgcolor: "rgba(0,0,0,0)",
         plot_bgcolor: "rgba(0,0,0,0)",
         font: { color: "#e0e0e0" },
-        margin: { l: 0, r: 0, t: 40, b: 0 },
+        margin: { l: 20, r: 20, t: 40, b: 20 },
       };
-      window.Plotly.newPlot(chartRef.current, fig.data, layout, {
+
+      const data = Array.isArray(fig.data) ? fig.data : [fig.data];
+
+      if (!window.Plotly) {
+        throw new Error("Plotly.js library failed to load from CDN.");
+      }
+
+      // Plotly.react handles initial render or updates automatically
+      window.Plotly.react(chartRef.current, data, layout, {
         responsive: true,
         displayModeBar: true,
         displaylogo: false,
+      }).catch(err => {
+        setErrorMsg(`Plotly drawing error: ${err.message}`);
       });
-      plotted.current = true;
     } catch (err) {
       console.error("Plotly render error:", err);
+      setErrorMsg(err.message || String(err));
     }
   }, [jsonStr]);
+
+  if (errorMsg) {
+    return (
+      <div className="plotly-chart-container error-state" style={{
+        width: "100%", height: "450px", borderRadius: "12px", margin: "12px 0",
+        border: "1px solid #ff4444", background: "rgba(255,0,0,0.1)",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "20px"
+      }}>
+        <span style={{ fontSize: "2rem", marginBottom: "10px" }}>⚠️</span>
+        <h3 style={{ color: "#ff8888", margin: "0 0 10px 0" }}>Visualization Render Error</h3>
+        <p style={{ color: "#ffaaaa", textAlign: "center", wordBreak: "break-all" }}>{errorMsg}</p>
+        <details style={{ marginTop: "15px", color: "#888", width: "100%" }}>
+          <summary style={{ cursor: "pointer", outline: "none" }}>Show Raw JSON Data</summary>
+          <pre style={{ 
+            marginTop: "10px", maxHeight: "150px", overflowY: "auto", 
+            background: "rgba(0,0,0,0.3)", padding: "10px", borderRadius: "5px", fontSize: "0.75rem" 
+          }}>
+            {jsonStr}
+          </pre>
+        </details>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -42,7 +101,7 @@ const PlotlyChart = ({ jsonStr }) => {
         overflow: "hidden",
         margin: "12px 0",
         border: "1px solid rgba(255,255,255,0.08)",
-        background: "rgba(0,0,0,0.3)",
+        background: "rgba(0,0,0,0.2)",
       }}
     />
   );
@@ -55,46 +114,82 @@ const PlotlyChart = ({ jsonStr }) => {
 const ArtifactSandbox = ({ htmlCode }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [consoleLogs, setConsoleLogs] = useState([]);
+  const [showConsole, setShowConsole] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const iframeRef = useRef(null);
+
+  // Message receiver for inside-sandbox logs and errors
+  useEffect(() => {
+    const handleMessage = (e) => {
+      if (e.data && e.data.type) {
+        if (e.data.type === 'CONSOLE_LOG') {
+          setConsoleLogs(prev => [...prev, { type: 'log', text: e.data.text }]);
+        } else if (e.data.type === 'CONSOLE_ERROR') {
+          setConsoleLogs(prev => [...prev, { type: 'error', text: e.data.text }]);
+        } else if (e.data.type === 'CONSOLE_WARN') {
+          setConsoleLogs(prev => [...prev, { type: 'warn', text: e.data.text }]);
+        }
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   useEffect(() => {
     if (!htmlCode || !iframeRef.current) return;
-
+    setConsoleLogs([]); // Reset logs on reload or new code
 
     try {
-      // Bulletproof dark mode and Error Catcher injection
       let doc = htmlCode;
-      if (!doc.includes("window.onerror")) {
-        const injection = `
-          <style>
-            html, body { background-color: #0d0d0d !important; color: #e0e0e0 !important; margin: 0; padding: 0; font-family: monospace; height: 100%; overflow: hidden; }
-            #chart, .js-plotly-plot { background-color: transparent !important; }
-            .bg { fill: transparent !important; }
-            .error-box { margin: 20px; border: 1px solid #ff4444; padding: 15px; background: #2a0000; border-radius: 5px; color: #ff8888; }
-          </style>
-          <script>
-            window.onerror = function(msg, url, line, col, error) {
-              const errDiv = document.createElement('div');
-              errDiv.className = 'error-box';
-              errDiv.innerHTML = '<strong>⚠️ JavaScript Execution Error:</strong><br/><br/>' + msg + '<br/>Line: ' + line;
-              document.body.appendChild(errDiv);
-              return false;
+      
+      // Inject dark style, error listener, and console log capture script
+      const injection = `
+        <style>
+          html, body { background-color: #0d0d0d !important; color: #e0e0e0 !important; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; height: 100%; overflow: hidden; }
+          #chart, .js-plotly-plot { background-color: transparent !important; }
+          .bg { fill: transparent !important; }
+          .error-box { margin: 20px; border: 1px solid #ff4444; padding: 15px; background: #2a0000; border-radius: 5px; color: #ff8888; }
+        </style>
+        <script>
+          (function() {
+            const _log = console.log;
+            const _error = console.error;
+            const _warn = console.warn;
+            
+            console.log = function(...args) {
+              _log.apply(console, args);
+              window.parent.postMessage({ type: 'CONSOLE_LOG', text: args.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ') }, '*');
             };
-          </script>
-        `;
-        const lowerHtml = doc.toLowerCase();
-        if (lowerHtml.includes("</head>")) {
-          const index = lowerHtml.indexOf("</head>");
-          doc = doc.substring(0, index) + injection + doc.substring(index);
-        } else if (lowerHtml.includes("<body>")) {
-          const index = lowerHtml.indexOf("<body>");
-          doc = doc.substring(0, index + 6) + injection + doc.substring(index + 6);
-        } else {
-          doc = injection + doc;
-        }
+            console.error = function(...args) {
+              _error.apply(console, args);
+              window.parent.postMessage({ type: 'CONSOLE_ERROR', text: args.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ') }, '*');
+            };
+            console.warn = function(...args) {
+              _warn.apply(console, args);
+              window.parent.postMessage({ type: 'CONSOLE_WARN', text: args.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ') }, '*');
+            };
+          })();
+
+          window.onerror = function(msg, url, line, col, error) {
+            window.parent.postMessage({ type: 'CONSOLE_ERROR', text: msg + ' (Line ' + line + ')' }, '*');
+            return false;
+          };
+        </script>
+      `;
+
+      const lowerHtml = doc.toLowerCase();
+      if (lowerHtml.includes("</head>")) {
+        const index = lowerHtml.indexOf("</head>");
+        doc = doc.substring(0, index) + injection + doc.substring(index);
+      } else if (lowerHtml.includes("<body>")) {
+        const index = lowerHtml.indexOf("<body>");
+        doc = doc.substring(0, index + 6) + injection + doc.substring(index + 6);
+      } else {
+        doc = injection + doc;
       }
 
-      // Write directly into the iframe's document — no blob URLs, no race conditions
+      // Write directly into the iframe's document
       const iframe = iframeRef.current;
       const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
       iframeDoc.open();
@@ -105,25 +200,32 @@ const ArtifactSandbox = ({ htmlCode }) => {
       console.error("Artifact write error:", err);
       setHasError(true);
     }
-  }, [htmlCode]);
+  }, [htmlCode, reloadKey]);
 
   if (hasError || !htmlCode) {
     return (
       <div className="artifact-error">
-        <span>⚠️</span> Failed to render artifact
+        <span>⚠️</span> Failed to render sandbox
       </div>
     );
   }
 
   return (
-    <div className={`artifact-container ${isExpanded ? "expanded" : ""}`}>
+    <div className={`artifact-container ${isExpanded ? "expanded" : ""}`} style={{ display: "flex", flexDirection: "column" }}>
       <div className="artifact-header">
         <div className="artifact-header-left">
           <div className="artifact-dot" />
-          <span className="artifact-label">Live Artifact</span>
+          <span className="artifact-label">Live Sandbox Simulation</span>
           <span className="artifact-badge">HTML/JS</span>
         </div>
         <div className="artifact-header-right">
+          <button
+            className="artifact-btn"
+            onClick={() => setReloadKey(prev => prev + 1)}
+            title="Reload simulation"
+          >
+            ↻
+          </button>
           <button
             className="artifact-btn"
             onClick={() => {
@@ -143,13 +245,98 @@ const ArtifactSandbox = ({ htmlCode }) => {
           </button>
         </div>
       </div>
-      <div className="artifact-iframe-wrap">
+      <div className="artifact-iframe-wrap" style={{ flexGrow: 1, position: "relative", display: "flex", flexDirection: "column" }}>
         <iframe
           ref={iframeRef}
           title="AI Artifact"
           className="artifact-iframe"
-          style={{ background: "#0d0d0d" }}
+          style={{ background: "#0d0d0d", flexGrow: 1, border: "none" }}
         />
+        
+        {/* Real-time Sandbox Console Overlay */}
+        <div 
+          className="sandbox-console-drawer"
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            borderTop: "1px solid rgba(139, 92, 246, 0.25)",
+            background: "rgba(10, 10, 15, 0.95)",
+            color: "#e0e0e0",
+            fontFamily: "monospace",
+            fontSize: "0.78rem",
+            zIndex: 10,
+            display: "flex",
+            flexDirection: "column",
+            backdropFilter: "blur(8px)"
+          }}
+        >
+          <div 
+            className="sandbox-console-header"
+            onClick={() => setShowConsole(!showConsole)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "6px 14px",
+              cursor: "pointer",
+              background: "rgba(255,255,255,0.03)",
+              userSelect: "none"
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>🛠️</span> Console Output {consoleLogs.length > 0 && `(${consoleLogs.length})`}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              {consoleLogs.length > 0 && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); setConsoleLogs([]); }} 
+                  style={{
+                    background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "0.75rem"
+                  }}
+                  title="Clear Console"
+                >
+                  Clear
+                </button>
+              )}
+              <span>{showConsole ? "▼" : "▲"}</span>
+            </div>
+          </div>
+          {showConsole && (
+            <div 
+              className="sandbox-console-body"
+              style={{
+                maxHeight: "150px",
+                overflowY: "auto",
+                padding: "8px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px",
+                borderTop: "1px solid rgba(255,255,255,0.05)"
+              }}
+            >
+              {consoleLogs.length === 0 ? (
+                <span style={{ color: "#777", fontStyle: "italic" }}>No console output captured. Simulation running cleanly.</span>
+              ) : (
+                consoleLogs.map((log, idx) => (
+                  <div 
+                    key={idx} 
+                    style={{
+                      color: log.type === 'error' ? '#ff6666' : log.type === 'warn' ? '#ffcc44' : '#a0e0a0',
+                      borderLeft: `3px solid ${log.type === 'error' ? '#ff4444' : log.type === 'warn' ? '#ffaa00' : '#44bb44'}`,
+                      paddingLeft: "8px",
+                      whiteSpace: "pre-wrap",
+                      lineHeight: "1.4"
+                    }}
+                  >
+                    {log.text}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -191,7 +378,14 @@ const renderInlineElements = (text) => {
       return <React.Fragment key={index}>{renderMath(chunk.slice(2, -2).trim(), false)}</React.Fragment>;
     }
     if (chunk.startsWith("$") && chunk.endsWith("$")) {
-      return <React.Fragment key={index}>{renderMath(chunk.slice(1, -1).trim(), false)}</React.Fragment>;
+      const content = chunk.slice(1, -1).trim();
+      // Smart check: if content contains common english words or is a simple currency amount, don't treat as math
+      const commonWords = /\b(and|or|the|a|an|of|to|in|is|that|it|costs|buy|price|each|for|with|at|from|by|on|this|that|these|those)\b/i;
+      const isCurrency = /^\d+(\.\d{2})?$/; // e.g. 10 or 9.99
+      if (commonWords.test(content) || isCurrency.test(content)) {
+        return chunk; // Return original text including dollar signs
+      }
+      return <React.Fragment key={index}>{renderMath(content, false)}</React.Fragment>;
     }
     if (chunk.startsWith("**") && chunk.endsWith("**")) {
       return <strong key={index}>{chunk.slice(2, -2)}</strong>;
@@ -240,21 +434,26 @@ const parseAndRenderSegment = (segment) => {
             return <h1 key={j} className="md-h1">{renderInlineElements(line.slice(2))}</h1>;
           }
 
-          if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+          const listMatch = trimmed.match(/^([\-\*]|\d+\.)\s+(.*)/);
+          if (listMatch) {
+            const indent = line.length - line.trimStart().length;
+            const marker = listMatch[1];
+            const content = listMatch[2];
+            const isNumbered = /^\d+\.$/.test(marker);
             return (
-              <div key={j} className="md-list-item bullet">
-                <span className="bullet-dot">•</span>
-                <span className="bullet-content">{renderInlineElements(trimmed.slice(2))}</span>
-              </div>
-            );
-          }
-
-          const numMatch = trimmed.match(/^(\d+)\.\s(.*)/);
-          if (numMatch) {
-            return (
-              <div key={j} className="md-list-item numbered">
-                <span className="num-prefix">{numMatch[1]}.</span>
-                <span className="num-content">{renderInlineElements(numMatch[2])}</span>
+              <div 
+                key={j} 
+                className={`md-list-item ${isNumbered ? "numbered" : "bullet"}`}
+                style={{ paddingLeft: `${indent * 8 + 12}px` }}
+              >
+                {isNumbered ? (
+                  <span className="num-prefix">{marker}</span>
+                ) : (
+                  <span className="bullet-dot">•</span>
+                )}
+                <span className="bullet-content">
+                  {renderInlineElements(content)}
+                </span>
               </div>
             );
           }
@@ -271,6 +470,10 @@ const parseAndRenderSegment = (segment) => {
 };
 
 const MessageRenderer = ({ text }) => {
+  // Subscribe to KaTeX load event — triggers re-render when KaTeX finishes loading
+  // eslint-disable-next-line no-unused-vars
+  const katexReady = useKatexReady();
+
   if (!text) return null;
 
   // Split on both Plotly JSON blocks and HTML Artifact blocks
@@ -432,6 +635,7 @@ export default function App() {
   const [currentStream, setCurrentStream] = useState("");
   const [attachedImage, setAttachedImage] = useState(null);
   const [abortController, setAbortController] = useState(null);
+  const currentLogsRef = useRef([]);
 
   // Settings
   const [enableWebSearch, setEnableWebSearch] = useState(false);
@@ -439,6 +643,7 @@ export default function App() {
   const [maxTokens, setMaxTokens] = useState(2048);
   const [temperature, setTemperature] = useState(0.7);
   const [deviceMode, setDeviceMode] = useState("gpu");
+  const [routingMode, setRoutingMode] = useState(() => localStorage.getItem("routing_mode") || "auto");
 
   // Typing animation
   const [displayText, setDisplayText] = useState("");
@@ -543,6 +748,7 @@ export default function App() {
       abortController.abort();
       setIsGenerating(false);
       setAbortController(null);
+      setCurrentStream("");
     }
   };
 
@@ -569,26 +775,32 @@ export default function App() {
     setIsGenerating(true);
     setCurrentStream("");
     setCurrentLogs([]);
+    currentLogsRef.current = [];
     setMenuOpen(false);
 
     const controller = new AbortController();
     setAbortController(controller);
 
+    let fullText = "";
+
     try {
       // Show a cold-start hint — model loading takes 2-4 minutes on first run
-      setCurrentLogs(["🧊 Cold start: loading AI models into GPU memory (2-4 min on first run, instant after)..."]);
+      const initLog = "🧊 Cold start: loading AI models into GPU memory (2-4 min on first run, instant after)...";
+      setCurrentLogs([initLog]);
+      currentLogsRef.current = [initLog];
 
       const res = await fetch(`${serverUrl}/api/chat`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          "Bypass-Tunnel-Reminder": "true"
+          "Bypass-Tunnel-Reminder": "true",
+          "bypass-tunnel-reminder": "true"
         },
         signal: controller.signal,
         body: JSON.stringify({
           prompt: userText,
           image: img,
-          mode: "auto",
+          mode: routingMode,
           context_length: contextLength,
           max_tokens: maxTokens,
           temperature,
@@ -614,7 +826,6 @@ export default function App() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let fullText = "";
       let firstChunkLogged = false;
       let lineBuffer = ""; // Buffer for incomplete JSON lines split across chunks
 
@@ -645,6 +856,7 @@ export default function App() {
           try {
             const data = JSON.parse(line);
             if (data.type === "status") {
+              currentLogsRef.current = [...currentLogsRef.current, data.message];
               setCurrentLogs(prev => [...prev, data.message]);
             } else if (data.type === "chunk") {
               fullText += data.content || data.text || "";
@@ -674,7 +886,11 @@ export default function App() {
             setHistory(prev => [...prev, { type: "ai", text: fullText, logs: [] }]);
             setIsGenerating(false);
           } else if (data.type === "status") {
+            currentLogsRef.current = [...currentLogsRef.current, data.message];
             setCurrentLogs(prev => [...prev, data.message]);
+          } else if (data.type === "error") {
+            setHistory(prev => [...prev, { type: "ai", text: "Error: " + data.message }]);
+            setIsGenerating(false);
           }
         } catch {}
       }
@@ -702,7 +918,7 @@ export default function App() {
 
     } catch (err) {
       if (err.name === "AbortError") {
-        setHistory(prev => [...prev, { type: "ai", text: fullText || "Cancelled." }]);
+        setHistory(prev => [...prev, { type: "ai", text: fullText || "Cancelled.", logs: currentLogsRef.current }]);
       } else if (err.message && (err.message.toLowerCase().includes("networkerror") || err.message.toLowerCase().includes("failed to fetch"))) {
         setHistory(prev => [...prev, { type: "ai", text: `❌ **Cannot reach backend.**\n\n**Backend not started?** Open a terminal and run:\n\`\`\`\nsource venv/bin/activate\npython backend/app.py\n\`\`\`\nWait for: \`Uvicorn running on http://127.0.0.1:8000\`\n\n**First prompt?** If the backend IS running, the models are still loading into GPU memory — this takes **2-4 minutes on first run**. Please wait and try again.` }]);
       } else {
@@ -716,7 +932,7 @@ export default function App() {
       setHistory(prev => {
         const copy = [...prev];
         const lastAi = [...copy].reverse().find(m => m.type === "ai");
-        if (lastAi) lastAi.logs = currentLogs;
+        if (lastAi && (!lastAi.logs || lastAi.logs.length === 0)) lastAi.logs = currentLogsRef.current;
         return copy;
       });
       setCurrentLogs([]);
@@ -829,7 +1045,27 @@ export default function App() {
         {/* ── INPUT AREA ── */}
         <div className="input-area">
           <div className="input-wrapper">
-            {attachedImage && <span className="image-badge">📎 Image attached</span>}
+            {attachedImage && (
+              <span className="image-badge">
+                📎 Image attached
+                <button 
+                  onClick={() => setAttachedImage(null)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "white",
+                    marginLeft: "6px",
+                    cursor: "pointer",
+                    fontWeight: "bold",
+                    fontSize: "0.8rem",
+                    padding: "0 2px"
+                  }}
+                  title="Remove image"
+                >
+                  ✕
+                </button>
+              </span>
+            )}
 
             {/* Popup menu */}
             {menuOpen && (
@@ -902,6 +1138,15 @@ export default function App() {
               </select>
             </div>
             <div className="modal-field">
+              <label>Routing Mode</label>
+              <select value={routingMode} onChange={e => setRoutingMode(e.target.value)}>
+                <option value="auto">Auto (Smart Router)</option>
+                <option value="reasoning">Reasoning (DeepSeek Math/Theory)</option>
+                <option value="coding">Coding (Actor-Critic Sandbox)</option>
+                <option value="simple">Simple (Direct Response)</option>
+              </select>
+            </div>
+            <div className="modal-field">
               <label>Server URL</label>
               <input
                 type="text"
@@ -929,6 +1174,7 @@ export default function App() {
                 if (finalUrl.endsWith("/")) finalUrl = finalUrl.slice(0, -1);
                 finalUrl = finalUrl.replace("localhost", "127.0.0.1").replace("0.0.0.0", "127.0.0.1");
                 localStorage.setItem("server_url", finalUrl);
+                localStorage.setItem("routing_mode", routingMode);
                 setServerUrl(finalUrl);
 
                 // Close the modal immediately — don't block the user

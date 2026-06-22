@@ -49,36 +49,37 @@ User Prompt
 │  Phi-3.5-Mini (Master Router)  │  ← Classifies: SIMPLE / CODING / REASONING
 └───────────────┬─────────────────┘
                 │
-    ┌───────────┼───────────┐
-    ▼           ▼           ▼
- SIMPLE      CODING     REASONING
-    │           │           │
-    │    ┌──────┴──────┐    └──────────────┐
-    │    ▼             ▼                   ▼
-    │ DeepSeek-R1  DeepSeek-R1       DeepSeek-R1
-    │ (Logic Plan) (Logic Plan)      (Draft Answer)
-    │    │             │                   │
-    │    ▼             ▼                   ▼
-    │ Reasoning    Reasoning          Reasoning
-    │ Sandbox      Sandbox ──────► Playground
-    │ (Verify)     (Verify)        (Verify via Python)
-    │    │             │                   │
-    │    ▼             ▼                   ▼
-    │ VibeThinker  VibeThinker        VibeThinker
-    │ (Write Code) (Fix Logic)       (Critique & Refine)
-    │    │             │                   │
-    │    ▼             ▼                   ▼
-    │ Execution    Execution         3D Gate Check
-    │ Sandbox      Sandbox               │
-    │    │         (Reflexion             ▼
-    │    │          Loop ×3)    OpenCodeInterpreter
-    │    │             │        (Plotly 3D Chart)
-    │    ▼             ▼                   │
-    └────┴─────────────┴───────────────────┘
+    ┌───────────┼──────────────────────────────┐
+    ▼           ▼                              ▼
+ SIMPLE      CODING                        REASONING
+    │           │                              │
+    │           ▼                              ▼
+    │     DeepSeek-R1 (Logic Plan)       DeepSeek-R1 (Draft Answer)
+    │           │                              │
+    │           ▼                              ▼
+    │     Reasoning Sandbox             Reasoning Playground
+    │       (Logic Check)                 (Python Asserts Check)
+    │           │                              │
+    │           ├─► Fail: VibeThinker          ├─► Fail: DeepSeek-R1
+    │           │   (Fix Logic Plan)           │   (Correction Loop ×3)
+    │           ▼                              ▼
+    │     VibeThinker (Write Code)        3D Gate Check
+    │           │                              │
+    │           ▼                              ▼
+    │     Execution Sandbox (Polyglot)  OpenCodeInterpreter
+    │           │                       (Three.js/Plotly.js Visual)
+    │           ├─► Fail: VibeThinker/R1       │
+    │           │   (Reflexion Loop ×3)        │
+    │           │                              │
+    │           ├─► Critical Fail:             ├─► Critical Fail:
+    │           │   Emergency Search           │   Emergency Search
+    │           │   + Playground Correction    │   + Playground Correction
+    │           ▼                              ▼
+    └───────────┴──────────────────────────────┘
                        │
                        ▼
-              Streamed Response
-          (Answer + Code + 3D Chart)
+               Streamed Response
+           (Answer + Code + 3D Visual)
 ```
 
 ---
@@ -102,6 +103,7 @@ The DMA is a custom memory manager built specifically for running multiple large
 - Auto-detects available RAM and sets a safety threshold (25% of total)
 - Uses **LRU eviction** — evicts the least recently used model when memory is tight
 - Has an **iGPU Unified Memory Guard** that prevents glibc heap corruption when multiple 7B models coexist on Intel iGPUs
+- **Kaggle dGPU Hot-Swap Mode** — On dGPU environments (like the 16GB Kaggle P100 with 32GB RAM), the DMA pre-loads all models into System RAM and aggressively hot-swaps them into the GPU one-by-one, ensuring complex reasoning models get 100% of the VRAM for their KV Cache.
 - Supports **lazy loading** — models load only when the pipeline actually needs them, not all at startup
 
 ### Polyglot Execution Sandbox
@@ -145,6 +147,15 @@ Running 7B+ models on iGPUs is notoriously unstable. These fixes are baked into 
 - **`corrupted size vs. prev_size` heap crash**: Fixed via the DMA iGPU Guard which prevents simultaneous large allocations
 - **Float16 kernel failures**: Models fall back to `float32` on XPU with IPEX optimization applied automatically
 
+### Enterprise VRAM Multiplexing (EVM)
+This codebase features **Enterprise VRAM Multiplexing (EVM)**, a hardware-aware hot-swap technology designed for environments where System RAM far exceeds discrete GPU VRAM (e.g., Kaggle instances). 
+
+**Minimum Hardware to Automatically Activate EVM:**
+- **System RAM:** ≥ 24 GB
+- **GPU VRAM:** ≤ 16 GB (Discrete NVIDIA/CUDA GPU)
+
+When the Orchestrator detects this specific hardware profile, EVM activates autonomously. It loads the entire 5-model Swarm into the host System RAM. During generation, it aggressively hot-swaps models one-by-one via the PCIe bus into the GPU, forcefully evicting dormant agents. This guarantees the active reasoning model (like DeepSeek-R1) commands 100% of the VRAM for its massive KV Cache, effectively neutralizing Out-Of-Memory crashes during deep chain-of-thought processing.
+
 ---
 
 ## 🔑 Key Features In Detail
@@ -166,18 +177,19 @@ For coding tasks, two agents work as a check-and-balance pair:
 - If code fails, VibeThinker attempts a **shallow fix** first
 - If shallow fix fails, a **deep escalation** rewrites the entire script
 - If deep escalation fails, a **Nuclear Reset** extracts lessons from all failures and starts over from scratch with a new plan
-- Up to **3 full reset cycles** are attempted before returning the best-effort output
+- Up to **2 reflexion loops**, **1 Nuclear Reset cycle** (incorporating failure lessons), and **1 emergency web search cycle** are executed in an optimized workflow before returning the best-effort output
 
 ---
 
 ### 3 — Dual Sandbox Verification
 The pipeline has two distinct sandboxes that run at different stages:
-- **Reasoning Sandbox** — Runs before code is written. DeepSeek-R1 writes a Python verification script to check its own logic plan. It has access to advanced math and science tools (like `sympy`, `scipy` ODE solvers for metabolic/enzyme kinetics, `Bio` (Biopython) for genomics/sequence verification, `rdkit` for cheminformatics/bond properties, `z3` theorem prover, `astropy`, and `pint`). If the plan fails logical verification, VibeThinker steps in to correct it before any code is written.
+- **Reasoning Sandbox** — Runs before code is written. DeepSeek-R1 writes a Python verification script to check its own logic plan. It has access to advanced math and science tools (like `sympy`, `scipy` ODE solvers for metabolic/enzyme kinetics, `Bio` (Biopython) for genomics/sequence verification, `rdkit` for cheminformatics/bond properties, `rocketpy` for trajectory/missile physics, `qiskit` & `qutip` for quantum dynamics/circuits, `z3` theorem prover, `astropy`, and `pint`). If the plan fails logical verification, VibeThinker steps in to correct it before any code is written.
 - **Execution Sandbox** — Runs the final generated code in a fully isolated subprocess with three layers of protection:
   - Process isolation (crashes can't kill the server)
   - Restricted `__import__` whitelist (no `os`, `subprocess`, `socket`)
-  - Linux resource caps (1 GB RAM, 120s CPU, 50 child processes)
-- Supports **Python, C, C++, Java, JavaScript, and Bash** — auto-detected from code signatures
+  - Linux resource caps (2 GB RAM, 120s CPU, 200 child processes)
+- **Unrestricted Fallback Mode:** If the secure restricted sandbox blocks a legitimate external library (e.g. PyTorch, external REST APIs), the orchestrator elegantly falls back to unrestricted execution, prefixing outputs with `⚠️ [Unrestricted Fallback]` to ensure transparency.
+- Supports **Python, C, C++, Java, JavaScript, Bash, Go, Rust, and TypeScript** — auto-detected from code signatures
 
 ---
 
@@ -189,7 +201,8 @@ After every `CODING` or `REASONING` response, a **3D Gate Check** runs automatic
   - **Genetics/Bio/Chemistry:** Renders parametric DNA double-helices (`THREE.CatmullRomCurve3`), active transport membrane channels, lipid bilayers, and molecular compounds.
   - **Controls:** Includes glassmorphic sliders to interactively tweak physical/organic settings (e.g. mass ratio, speed, pH levels, ATP concentration) in real-time.
 - The artifact is sent to the React frontend, which renders it inside a **secure, isolated iframe sandbox** — exactly like Anthropic's Claude Artifacts.
-- The UI features a premium glassmorphic artifact window with expand-to-fullscreen and open-in-new-tab capabilities.
+- The UI features a premium glassmorphic artifact window with expand-to-fullscreen, manual hot-reloading (`↻`), and open-in-new-tab capabilities.
+- **Real-time Sandbox Console Overlay:** A live slide-up drawer inside the React UI that captures `console.log`, `console.warn`, and `console.error` directly from the secure iframe, enabling instant visual debugging of client-side Javascript simulations.
 - **Dual-Mode Fallback:** If the AI HTML generation fails validation, it falls back to a Python Plotly executor, running in the backend Sandbox and sending the clean JSON dataset to the frontend.
 
 ---
@@ -211,7 +224,8 @@ The system remembers what it has solved before and uses it to improve future res
 - **SQLite** with cosine similarity and keyword search as fallback
 - Stores **compact solution summaries** — not raw code dumps — to avoid context bloat
 - Stores **mistake-fix patterns** from the Reflexion loop to prevent regressing on similar tasks
-- Automatic **deduplication** — if a very similar task (>60% word overlap) is already stored, it skips saving
+- **Smart Deduplication** — uses NLP stopword filtering and punctuation stripping to intelligently merge near-identical tasks (>80% content word overlap) without falsely merging unique variable tasks.
+- **Concurrency-safe Architecture** — Uses dynamic connection pooling and 30-second lock timeouts for SQLite to gracefully handle multi-threaded async FastAPI requests.
 - Memory can be viewed (count), cleared, and inspected via the UI sidebar and REST API
 
 ---
@@ -233,12 +247,11 @@ Upload any image alongside a prompt for multimodal analysis:
 
 ---
 
-### 9 — Prompt Cruncher
-Prevents context overflow when very long documents or code are pasted:
-- Estimates token count from character length
-- If the prompt exceeds the model's context limit, it **summarizes the middle section** using the Router
-- Preserves the start and end of the prompt intact (where the most important context usually lives)
-- Safety net caps at 50,000 characters for extreme-length inputs
+### 9 — Context Overflow & Prompt Cruncher
+Prevents context window crashes when extremely long documents or code blocks are pasted:
+- **Smart Token Allocation:** Dynamically balances generation space (`max_tokens`) against prompt length. If context is tight, it automatically shrinks the generation ceiling (down to a safe minimum of 512 tokens) to preserve your prompt entirely without truncating it.
+- If the prompt still exceeds the absolute context limit, it safely truncates the middle section while preserving the start and end of the prompt intact (where the most important instructions live).
+- Safety net caps at 50,000 characters for extreme-length inputs to protect VRAM.
 
 ---
 
@@ -257,6 +270,18 @@ The sandboxed python environment supports live prediction and data analysis:
 - **Real-Time Data Fetching:** Whitelisted network access via `requests`, `urllib`, and `http` allowing the code executor to query open REST APIs (e.g., Yahoo Finance, Open-Meteo, Alpha Vantage).
 - **Exact Numerical Forecasting:** The agent can write python code utilizing `numpy` and `pandas` to run moving averages, regressions, standard deviations, and Monte Carlo trend simulations on the retrieved real-world datasets rather than guessing or hallucinating numbers.
 - **Dynamic 3D Plotting:** Renders predictive forecasts into responsive WebGL (Three.js) or Plotly interactive 3D charts.
+
+---
+
+## 🆕 Pipeline Optimizations (June 2026 Update)
+
+To maximize accuracy, performance, and stability on consumer hardware, the following pipeline optimizations have been implemented:
+
+* **Dynamic Context Scaling (RAM/VRAM-Aware):** Beyond the base 8k token limit, the context window dynamically expands up to **32k tokens** if the system has RAM/VRAM headroom (leaving a strict 5% memory safety margin). This allows the models to swallow massive web scraped pages or long local files when memory is clear.
+* **Deterministic Playground Verification:** Test script writing is routed to the **Router (Phi-3.5-Mini)** rather than the verbose DeepSeek-R1-7B. This prevents DeepSeek's long `<think>...</think>` tokens from consuming the context window and causing code truncation/syntax errors.
+* **Emergency Search Verification & Correction Loop:** After executing an emergency web search, the pipeline runs exactly 1 round of sandbox verification on the healed result. If it fails, DeepSeek gets the error traceback to perform a final correction round before returning the answer.
+* **RAG Variable Prioritization (No Parameter Drift):** Restructured system prompts with strict instructions forcing the models to use past memories *only* for algorithmic structure, ensuring they always prioritize the active user prompt's exact velocities, coordinates, and parameters.
+* **Memory Swap Safety:** Solved model-reuse memory faults by implementing safe model pointer re-acquisition in the orchestrator execution loops, completely preventing GPU memory segfaults during hot-swaps.
 
 ---
 
@@ -353,4 +378,4 @@ Team_Trenches/
 
 ## 📄 License
 
-GNU Affero General Public License v3.0 (AGPLv3) — see [LICENSE](./LICENSE) for details.
+This project is licensed under the MIT License — see the [LICENSE](./LICENSE) file for details.
