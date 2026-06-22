@@ -68,6 +68,24 @@ LANG_SIGNATURES = {
         'compile': ['javac', '{src}'],
         'run': ['java', '-cp', '{dir}', '{classname}'],
     },
+    'go': {
+        'strong': [r'^package\s+main\b', r'import\s+\(\s*"fmt"', r'func\s+main\s*\(\)'],
+        'ext': '.go',
+        'compile': ['go', 'build', '-o', '{bin}', '{src}'],
+        'run': ['{bin}'],
+    },
+    'rust': {
+        'strong': [r'fn\s+main\s*\(\)', r'println!\s*\(', r'use\s+std::'],
+        'ext': '.rs',
+        'compile': ['rustc', '{src}', '-o', '{bin}'],
+        'run': ['{bin}'],
+    },
+    'typescript': {
+        'strong': [r'\binterface\s+\w+\b', r'\btype\s+\w+\s*=', r'console\.log\s*\('],
+        'ext': '.ts',
+        'compile': None,
+        'run': ['ts-node', '{src}'],
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -85,12 +103,12 @@ import json
 # ── Step 1: Set Resource Limits (Linux only) ─────────────────────────────
 try:
     import resource
-    # Max 1 GB RAM (enough for numpy/pandas heavy workloads)
-    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
-    # Max 15 seconds of CPU time to aggressively kill infinite loops
-    resource.setrlimit(resource.RLIMIT_CPU, (15, 15))
-    # Max 50 child processes (allows multiprocessing but blocks fork bombs)
-    resource.setrlimit(resource.RLIMIT_NPROC, (50, 50))
+    # Max 2 GB RAM (enough for numpy/pandas heavy workloads and complex physics/biology simulation solvers)
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+    # Max 30 seconds of CPU time to aggressively kill infinite loops
+    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+    # Max 100 child processes (allows multiprocessing but blocks fork bombs)
+    resource.setrlimit(resource.RLIMIT_NPROC, (100, 100))
     # Max 100 MB file writes (allows data output but prevents disk flooding)
     resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
 except Exception:
@@ -134,6 +152,8 @@ ALLOWED_MODULES = {
     'astropy',
     # Bioinformatics & Cheminformatics
     'Bio', 'rdkit',
+    # Quantum Physics & Rocket Dynamics
+    'rocketpy', 'qiskit', 'qutip',
     # Web & API requests (for real-time weather and stock prediction data)
     'requests', 'urllib', 'http',
 }
