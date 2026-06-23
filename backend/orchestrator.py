@@ -984,21 +984,50 @@ class AgentOrchestrator:
         if purpose == "reasoning" or model_key in ["vibethinker", "deepseek_r1"]:
             coder_model = self._get_model("router", required_ctx=8192)
 
+        # Classify the domain of the query
+        domain = "general"
+        prompt_lower = (original_prompt or "").lower() + " " + (hypothesis or "").lower()
+        if any(kw in prompt_lower for kw in ["biology", "gene", "protein", "dna", "rna", "translation", "transcription", "sequence", "codon", "molecule", "chemical", "bond", "valency", "structure", "chemistry", "atp", "reaction", "formula", "rdkit", "biopython"]):
+            domain = "bio_chem"
+        elif any(kw in prompt_lower for kw in ["physics", "math", "equation", "solve", "drift", "lorentz", "velocity", "trajectory", "integral", "derivative", "differential", "limit", "matrix", "vector", "force", "cycle", "frequency"]):
+            domain = "math_physics"
+
+        rules = [
+            "Test the CORE claim/formula with concrete numerical values",
+            "You MUST strictly adhere to ALL constraints in the original query (e.g. air drag, specific angles, 3D vs 2D). DO NOT SIMPLIFY the physics.",
+            "You MUST use math.isclose(a, b, rel_tol=1e-3) for ANY floating point comparisons. NEVER use == for floats.",
+            "Check at least 2 different test cases or boundary conditions",
+            "Check dimensional consistency (units make sense). If using unit libraries like pint, perform all unit conversions OUTSIDE the differential solver loops/functions (never instantiate or convert quantities inside solve_ivp/odeint callbacks as it causes type-casting exceptions and severe performance slowdowns)."
+        ]
+
+        if domain == "math_physics":
+            rules.append(
+                "For complex or non-standard physics/math equations (like multi-dimensional drifts, n-body, electromagnetics), "
+                "you MUST write a sympy block to algebraically derive and prove the formulas from first principles (e.g. F=ma, Lorentz force) "
+                "before running numerical checks. Assert that the sympy solution matches your proposed formula."
+            )
+        elif domain == "bio_chem":
+            rules.append(
+                "For biology/chemistry queries, you MUST use Bio (Biopython) or rdkit (RDKit) to strictly validate "
+                "molecular weights, codon translation, sequence transcription, or chemical property assertions. "
+                "Do not mock these values; use the actual libraries to compute and verify them."
+            )
+
+        rules.extend([
+            "Use assert statements with descriptive messages",
+            "Print 'VERIFIED' as the LAST line ONLY if ALL assertions pass",
+            "Do NOT print 'VERIFIED' if any assertion fails"
+        ])
+
+        rules_str = "\n".join([f"{i+1}. {rule}" for i, rule in enumerate(rules)])
+
         prompt_context = ""
         if original_prompt:
             prompt_context = f"ORIGINAL QUERY CONSTRAINTS:\n{original_prompt[:1500]}\n\n"
 
         playground_prompt = (
             f"Write a Python script (max 50 lines) that {'tests this code logic' if purpose == 'logic' else 'verifies this reasoning'}.\n\n"
-            "VERIFICATION RULES:\n"
-            "1. Test the CORE claim/formula with concrete numerical values\n"
-            "2. You MUST strictly adhere to ALL constraints in the original query (e.g. air drag, specific angles, 3D vs 2D). DO NOT SIMPLIFY the physics.\n"
-            "3. You MUST use math.isclose(a, b, rel_tol=1e-3) for ANY floating point comparisons. NEVER use == for floats.\n"
-            "4. Check at least 2 different test cases or boundary conditions\n"
-            "5. Check dimensional consistency (units make sense). If using unit libraries like pint, perform all unit conversions OUTSIDE the differential solver loops/functions (never instantiate or convert quantities inside solve_ivp/odeint callbacks as it causes type-casting exceptions and severe performance slowdowns).\n"
-            "6. Use assert statements with descriptive messages\n"
-            "7. Print 'VERIFIED' as the LAST line ONLY if ALL assertions pass\n"
-            "8. Do NOT print 'VERIFIED' if any assertion fails\n\n"
+            f"VERIFICATION RULES:\n{rules_str}\n\n"
             "You have access to these scientific tools:\n"
             "  - math, cmath           → Core math operations, trigonometry, constants\n"
             "  - numpy                 → Arrays, linear algebra, matrix operations, statistics\n"
@@ -1666,12 +1695,27 @@ class AgentOrchestrator:
 
             if not verified:
                 if status_callback:
-                    status_callback("Logic failed. VibeThinker intervening...", "warning", "vibethinker", 35)
+                    status_callback("Logic failed. Resolving with Emergency Search...", "warning", "router", 35)
                 
                 # Fetch quick helper web search context
                 helper_search_context = ""
                 try:
-                    search_term = " ".join([word for word in prompt.split() if (len(word) > 3 and word.isalnum())][:10])
+                    router_llm = self._get_model("router", required_ctx=1024)
+                    search_opt_p = (
+                        "Generate a highly specific search query (3-6 words) to find the correct scientific formula, "
+                        "biological facts, or chemical properties to resolve this sandbox verification failure.\n\n"
+                        f"Original Prompt: {prompt}\n"
+                        f"Sandbox Failure Output: {pg_out[:500]}\n"
+                        "Output ONLY the search query."
+                    )
+                    search_term = self._call_model(router_llm, search_opt_p, max_tokens=30, temperature=0.1).strip()
+                    search_term = search_term.replace('"', '').replace('`', '').strip()
+                    if not search_term or len(search_term) < 5:
+                        search_term = " ".join([word for word in prompt.split() if (len(word) > 3 and word.isalnum())][:10])
+                    
+                    if status_callback:
+                        status_callback(f"Emergency Search: '{search_term}'...", "info", "router", 36)
+                    
                     web_res = self.web_search.search(search_term, max_results=3)
                     if web_res:
                         helper_search_context = "\n".join([f"- {r.get('title')}: {r.get('snippet', '')}" for r in web_res])
@@ -1980,7 +2024,22 @@ class AgentOrchestrator:
                     # Fetch quick helper web search context to resolve unknown concepts immediately
                     helper_search_context = ""
                     try:
-                        search_term = " ".join([word for word in prompt.split() if (len(word) > 3 and word.isalnum())][:10])
+                        router_llm = self._get_model("router", required_ctx=1024)
+                        search_opt_p = (
+                            "Generate a highly specific search query (3-6 words) to find the correct scientific formula, "
+                            "biological facts, or chemical properties to resolve this sandbox verification failure.\n\n"
+                            f"Original Prompt: {prompt}\n"
+                            f"Sandbox Failure Output: {pg_out[:500]}\n"
+                            "Output ONLY the search query."
+                        )
+                        search_term = self._call_model(router_llm, search_opt_p, max_tokens=30, temperature=0.1).strip()
+                        search_term = search_term.replace('"', '').replace('`', '').strip()
+                        if not search_term or len(search_term) < 5:
+                            search_term = " ".join([word for word in prompt.split() if (len(word) > 3 and word.isalnum())][:10])
+                        
+                        if status_callback:
+                            status_callback(f"Emergency Search: '{search_term}'...", "info", "router", 36 + rnd*12)
+                        
                         web_res = self.web_search.search(search_term, max_results=3)
                         if web_res:
                             helper_search_context = "\n".join([f"- {r.get('title')}: {r.get('snippet', '')}" for r in web_res])
