@@ -1512,7 +1512,9 @@ class AgentOrchestrator:
         
         if self.context_length == 0:
             router_ctx = min(router_ctx_cap, est_tokens + self.max_tokens)
-            ds_ctx = min(ds_ctx_cap, est_tokens + self.max_tokens)
+            # DeepSeek-R1 is a reasoning/thinking model that generates large internal CoT thinking blocks.
+            # We allocate a larger 8k base context window to prevent thinking phases from cutting off the final answer.
+            ds_ctx = min(ds_ctx_cap, est_tokens + 8192)
             oc_ctx = min(oc_ctx_cap, 8192)
         else:
             router_ctx = min(self.context_length, router_ctx_cap)
