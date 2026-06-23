@@ -1718,6 +1718,33 @@ class AgentOrchestrator:
                 viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
                 return f"### Logic Plan (Verified)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
 
+            # ── Phase 4.5: Router Linter Intercept (Syntax/Import Errors) ──
+            if not ok and reset == 0:
+                is_syntax_error = any(e in output for e in ["SyntaxError", "ModuleNotFoundError", "NameError", "IndentationError", "TypeError", "AttributeError", "ValueError"])
+                if is_syntax_error:
+                    if status_callback:
+                        status_callback("Router (Phi-3.5) patching syntax error...", "warning", "router", 68)
+                    router_linter = self._get_model("router", required_ctx=router_ctx)
+                    lint_p = (
+                        f"You are a fast Python Syntax Linter.\n"
+                        f"The code failed with this error:\n{output[:600]}\n\n"
+                        f"CODE:\n{code[:2500]}\n\n"
+                        f"Identify the typo/error and rewrite the complete corrected script in a ```python``` block. Fix ONLY the exact error, do not change the core algorithm."
+                    )
+                    lint_code = Sandbox.extract_code(self._strip_thinking(self._call_model(router_linter, lint_p, gen_tokens, 0.1, system_prompt="You are a strict syntax linter. Output only code.")))
+                    if lint_code and len(lint_code) > 20:
+                        linter_ok, linter_output = self.sandbox.execute(lint_code)
+                        if linter_ok:
+                            code = lint_code
+                            output = linter_output
+                            ok = True
+                            if status_callback:
+                                status_callback("Router Linter successfully patched the code!", "success", "router", 70)
+                            self.memory.save(prompt, code)
+                            router_llm = None; ds_llm = None; vibe_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                            viz = self._check_3d_gate(prompt, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+                            return f"### Logic Plan (Verified)\n{compiled_plan}\n\n### Execution Output\n{output}{viz}\n\n### Code\n```python\n{code}\n```"
+            
             # ── Phase 5 & 6: Reflexion Loops (Only run during initial draft, not during Nuclear Reset) ──
             if reset == 0:
                 # Fetch quick helper web search context
