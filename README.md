@@ -282,6 +282,9 @@ To maximize accuracy, performance, and stability on consumer hardware, the follo
 * **Emergency Search Verification & Correction Loop:** After executing an emergency web search, the pipeline runs exactly 1 round of sandbox verification on the healed result. If it fails, DeepSeek gets the error traceback to perform a final correction round before returning the answer.
 * **RAG Variable Prioritization (No Parameter Drift):** Restructured system prompts with strict instructions forcing the models to use past memories *only* for algorithmic structure, ensuring they always prioritize the active user prompt's exact velocities, coordinates, and parameters.
 * **Memory Swap Safety:** Solved model-reuse memory faults by implementing safe model pointer re-acquisition in the orchestrator execution loops, completely preventing GPU memory segfaults during hot-swaps.
+* **Model-Specific Physical Context Ceilings:** Prevents VRAM OOM and RoPE overflows on discrete GPUs by dynamically limiting context allocation to the models' physical training limits: `router` (8k), `vibethinker` (8k), `opencode` (16k), and `deepseek_r1` (16k).
+* **Automatic CPU Fallback Loader:** Intercepts GPU context creation failures and automatically retries loading the model with `n_gpu_layers=0` (CPU mode) to keep the pipeline alive.
+* **Visual Sandbox Error Overlay:** Captures client-side JavaScript/Three.js sandbox runtime exceptions and displays them inside a visual warning panel within the iframe viewport, eliminating silent black-screen failures.
 
 ---
 
