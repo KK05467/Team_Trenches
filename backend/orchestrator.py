@@ -1866,7 +1866,7 @@ class AgentOrchestrator:
                 if status_callback:
                     status_callback(f"Searching: '{search_query}'...", "info", "router", 8)
                 
-                results = self.web_search.search(search_query, max_results=3)
+                results = self.web_search.search(search_query, max_results=5)
                 
                 # 2. Compile Snippets Block & Scrape top pages
                 snippets_list = []
@@ -1880,19 +1880,19 @@ class AgentOrchestrator:
                         snippet = r.get("snippet", "")
                         snippets_list.append(f"[{idx+1}] Title: {title}\nURL: {link}\nSnippet: {snippet}")
                         
-                        # Try to scrape the page content if we haven't reached the limit
-                        if scraped_count < 2 and link:
+                        # Try to scrape the page content if we haven't reached the limit (top 5 pages)
+                        if scraped_count < 5 and link:
                             # Skip Google News index pages to avoid scraping massive, noisy, cross-mixed aggregates
                             if "news.google.com" in link.lower() and ("/topics/" in link.lower() or "/stories/" in link.lower() or "/publications/" in link.lower()):
                                 continue
                             
                             if status_callback:
-                                status_callback(f"Scraping: {link[:40]}...", "info", "router", 12)
+                                status_callback(f"Scraping ({scraped_count+1}/5): {link[:40]}...", "info", "router", 12 + scraped_count * 2)
                             
                             text = self.web_search.scrape_url(link)
                             if text and len(text.strip()) > 200:
                                 scraped_pages.append(
-                                    f"=== START SCRAPED PAGE ===\nURL: {link}\nContent:\n{text[:8000]}\n=== END SCRAPED PAGE ==="
+                                    f"=== START SCRAPED PAGE ===\nURL: {link}\nContent:\n{text[:6000]}\n=== END SCRAPED PAGE ==="
                                 )
                                 scraped_count += 1
                 
