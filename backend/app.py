@@ -5,6 +5,9 @@ os.environ["SYCL_DEVICE_FILTER"] = "level_zero"
 os.environ["SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS"] = "1"
 os.environ["IPEX_OPTIMIZE_TRANSFORMERS"] = "1"
 import sys
+# Add root folder to sys.path to resolve backend package imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import threading
 import json
 import asyncio
@@ -16,10 +19,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
-
-# Add root folder to sys.path to resolve backend package imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from backend.memory import Memory
 from backend.downloader import check_models_status, download_model, MODEL_DEFINITIONS
 from backend.orchestrator import AgentOrchestrator
 
@@ -309,13 +309,11 @@ def get_memory_count():
 def clear_all_memory():
     """Reset vector database / SQLite store."""
     try:
-        # Recreate db tables and client
-        orchestrator.memory = Memory()
-        # Remove sqlite db file and recreate
+        # Remove sqlite db file first, then reinitialize
         path = orchestrator.memory.sqlite_path
         if os.path.exists(path):
             os.remove(path)
-        orchestrator.memory._init_sqlite()
+        orchestrator.memory = Memory()
         return {"status": "cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

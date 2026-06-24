@@ -10,7 +10,7 @@ accelerate==0.27.2
 chromadb==0.4.24
 numpy==1.26.4
 beautifulsoup4==4.12.3
-duckduckgo-search>=5.2.2
+ddgs>=6.0.0
 sympy>=1.12
 scipy>=1.11.0
 pint>=0.23
@@ -20,6 +20,11 @@ astropy>=6.0
 biopython>=1.83
 rdkit>=2023.9.5
 plotly>=5.20.0
-rocketpy>=1.12.1
+rocketpy<=1.1.4
 qiskit>=2.4.2
 qutip>=5.3.0
+scikit-learn>=1.4.0
+statsmodels>=0.14.0
+cryptography>=42.0.0
+scapy>=2.5.0
+pyjwt>=2.8.0

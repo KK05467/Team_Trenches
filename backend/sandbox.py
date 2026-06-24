@@ -106,8 +106,8 @@ try:
     # Max 2 GB RAM (enough for numpy/pandas heavy workloads and complex physics/biology simulation solvers)
     resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
     # Max 30 seconds of CPU time to aggressively kill infinite loops
-    # Increased to 120 seconds for heavier simulations
-    resource.setrlimit(resource.RLIMIT_CPU, (120, 120))
+    # Increased to 300 seconds for heavier simulations
+    resource.setrlimit(resource.RLIMIT_CPU, (300, 300))
     # Max 200 child processes (allows multiprocessing but blocks fork bombs)
     resource.setrlimit(resource.RLIMIT_NPROC, (200, 200))
     # Max 100 MB file writes (allows data output but prevents disk flooding)
@@ -142,7 +142,7 @@ ALLOWED_MODULES = {
     # Abstract Base Classes
     'abc',
     # Scientific Libraries (if installed)
-    'numpy', 'sympy', 'scipy', 'pandas', 'plotly',
+    'numpy', 'sympy', 'scipy', 'pandas', 'plotly', 'sklearn', 'statsmodels',
     # Physics & Unit Verification
     'pint',
     # Formal Logic & Theorem Proving
@@ -155,6 +155,8 @@ ALLOWED_MODULES = {
     'Bio', 'rdkit',
     # Quantum Physics & Rocket Dynamics
     'rocketpy', 'qiskit', 'qutip',
+    # Cybersecurity & Cryptography / Network Simulation
+    'cryptography', 'scapy', 'jwt', 'pyjwt',
     # Web & API requests (for real-time weather and stock prediction data)
     'requests', 'urllib', 'http',
 }
@@ -212,8 +214,78 @@ code_path = sys.argv[1]
 with _real_import('builtins').open(code_path, 'r') as f:
     user_code = f.read()
 
+# ── Step 4.5: Inject Sandbox Data Helper & API Keys ──────────────────────
+import os
+os.environ["ALPHA_VANTAGE_KEY"] = "demo_finance_key_ff88c221"
+os.environ["OPENWEATHER_KEY"] = "demo_weather_key_991823ab"
+os.environ["COINGECKO_KEY"] = "demo_crypto_key_aa11b239"
+
+class SandboxDataHelper:
+    @staticmethod
+    def get_stock_data(symbol, period="1y"):
+        try:
+            import numpy as np
+            import pandas as pd
+            from datetime import datetime, timedelta
+            baselines = {"AAPL": 175.0, "MSFT": 420.0, "GOOG": 150.0, "NVDA": 800.0, "TSLA": 180.0, "BTC": 65000.0}
+            base = baselines.get(symbol.upper(), 100.0)
+            days = 365
+            if "mo" in period:
+                days = int(period.replace("mo", "")) * 30
+            elif "y" in period:
+                days = int(period.replace("y", "")) * 365
+            elif "d" in period:
+                days = int(period.replace("d", ""))
+            np.random.seed(42)
+            dates = [datetime.now() - timedelta(days=i) for i in range(days)]
+            dates.reverse()
+            returns = np.random.normal(0.0002, 0.015, days)
+            prices = [base]
+            for r in returns:
+                prices.append(prices[-1] * np.exp(r))
+            prices = prices[:-1]
+            return pd.DataFrame({
+                "Date": [d.strftime("%Y-%m-%d") for d in dates],
+                "Open": [p * (1 + np.random.normal(0, 0.002)) for p in prices],
+                "High": [p * (1 + abs(np.random.normal(0, 0.005))) for p in prices],
+                "Low": [p * (1 - abs(np.random.normal(0, 0.005))) for p in prices],
+                "Close": prices,
+                "Volume": [int(np.random.poisson(1000000) * (p/base)) for p in prices]
+            })
+        except Exception as e:
+            return str(e)
+
+    @staticmethod
+    def get_weather_data(city, days=7):
+        try:
+            import numpy as np
+            import pandas as pd
+            from datetime import datetime, timedelta
+            city_temps = {"LONDON": 15.0, "NEW YORK": 22.0, "TOKYO": 18.0, "MUMBAI": 30.0, "SYDNEY": 19.0}
+            base_temp = city_temps.get(city.upper(), 20.0)
+            dates = [datetime.now() + timedelta(days=i) for i in range(days)]
+            np.random.seed(42)
+            temps = [base_temp + np.sin(i/3)*5 + np.random.normal(0, 1) for i in range(days)]
+            humidity = [60 + np.cos(i/3)*20 + np.random.normal(0, 5) for i in range(days)]
+            return pd.DataFrame({
+                "Date": [d.strftime("%Y-%m-%d") for d in dates],
+                "Temperature_C": temps,
+                "Humidity_Pct": [min(100, max(0, h)) for h in humidity],
+                "Condition": np.random.choice(["Sunny", "Partly Cloudy", "Rainy", "Overcast"], days)
+            })
+        except Exception as e:
+            return str(e)
+
+    @staticmethod
+    def get_api_key(service_name):
+        keys = {"weather": "demo_weather_key_991823ab", "finance": "demo_finance_key_ff88c221", "crypto": "demo_crypto_key_aa11b239"}
+        return keys.get(service_name.lower(), "demo_generic_key_000000")
+
 # Build the completely isolated execution environment
-restricted_globals = {'__builtins__': safe_builtins}
+restricted_globals = {
+    '__builtins__': safe_builtins,
+    'SandboxDataHelper': SandboxDataHelper
+}
 
 old_stdout = sys.stdout
 old_stderr = sys.stderr
@@ -249,7 +321,7 @@ print(json.dumps(result))
 
 
 class Sandbox:
-    def __init__(self, timeout=120):
+    def __init__(self, timeout=300):
         self.timeout = timeout
 
     def _detect_gui(self, code):
@@ -468,9 +540,20 @@ class Sandbox:
                 f"Write shorter, more concise code if necessary to avoid hitting output limits."
             )
 
+        # Prepend compatibility monkeypatch for NumPy < 2.0 (e.g. numpy==1.26.4) and rocketpy
+        compat_code = (
+            "import sys\n"
+            "try:\n"
+            "    import numpy as _np\n"
+            "    if not hasattr(_np, 'trapezoid'):\n"
+            "        _np.trapezoid = getattr(_np, 'trapz', None)\n"
+            "except Exception:\n"
+            "    pass\n\n"
+        ) + code
+
         # Write the AI's code to a temp file
         code_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
-        code_file.write(code)
+        code_file.write(compat_code)
         code_file.close()
         code_path = code_file.name
 
@@ -547,8 +630,19 @@ class Sandbox:
         Fallback: Execute Python code in a standard subprocess without restrictions.
         Used when the restricted sandbox blocks a legitimate module the AI needs.
         """
+        # Prepend compatibility monkeypatch for NumPy < 2.0 (e.g. numpy==1.26.4) and rocketpy
+        compat_code = (
+            "import sys\n"
+            "try:\n"
+            "    import numpy as _np\n"
+            "    if not hasattr(_np, 'trapezoid'):\n"
+            "        _np.trapezoid = getattr(_np, 'trapz', None)\n"
+            "except Exception:\n"
+            "    pass\n\n"
+        ) + code
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(code)
+            f.write(compat_code)
             path = f.name
 
         try:
