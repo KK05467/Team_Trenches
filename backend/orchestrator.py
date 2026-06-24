@@ -1896,34 +1896,43 @@ class AgentOrchestrator:
 
                 # Calculate dynamic character cap per page based on actual available memory limits
                 char_limit = 6000
-                if torch and torch.cuda.is_available():
-                    try:
-                        free_vram, total_vram = torch.cuda.mem_get_info(0)
-                        free_vram_gb = free_vram / (1024 ** 3)
-                        if free_vram_gb > 6.0:
-                            char_limit = 12000
-                        elif free_vram_gb > 3.0:
-                            char_limit = 9000
-                    except Exception:
-                        pass
+                is_predictive = any(kw in prompt_lower for kw in ["predict", "forecast", "prediction"])
+                max_results = 20 if is_predictive else 5
+                max_scraped = 20 if is_predictive else 5
+                
+                if is_predictive:
+                    # Keep per-page limits tight (e.g. 2500 chars) for 20 pages to fit within 16k context
+                    char_limit = 2500
                 else:
-                    try:
-                        free_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
-                        if free_ram_gb > 16.0:
-                            char_limit = 12000
-                        elif free_ram_gb > 8.0:
-                            char_limit = 9000
-                    except Exception:
-                        pass
+                    if torch and torch.cuda.is_available():
+                        try:
+                            free_vram, total_vram = torch.cuda.mem_get_info(0)
+                            free_vram_gb = free_vram / (1024 ** 3)
+                            if free_vram_gb > 6.0:
+                                char_limit = 12000
+                            elif free_vram_gb > 3.0:
+                                char_limit = 9000
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            free_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+                            if free_ram_gb > 16.0:
+                                char_limit = 12000
+                            elif free_ram_gb > 8.0:
+                                char_limit = 9000
+                        except Exception:
+                            pass
 
                 if status_callback:
                     status_callback(f"Searching: '{search_query}'... (Limit: {char_limit} chars/page)", "info", "router", 8)
                 
-                results = self.web_search.search(search_query, max_results=5)
+                results = self.web_search.search(search_query, max_results=max_results)
                 
                 # 2. Compile Snippets Block & Scrape top pages
                 snippets_list = []
                 scraped_pages = []
+                scraped_raw_texts = []
                 scraped_count = 0
                 
                 if results:
@@ -1933,17 +1942,37 @@ class AgentOrchestrator:
                         snippet = r.get("snippet", "")
                         snippets_list.append(f"[{idx+1}] Title: {title}\nURL: {link}\nSnippet: {snippet}")
                         
-                        # Try to scrape the page content if we haven't reached the limit (top 5 pages)
-                        if scraped_count < 5 and link:
+                        # Try to scrape the page content if we haven't reached the limit
+                        if scraped_count < max_scraped and link:
                             # Skip Google News index pages to avoid scraping massive, noisy, cross-mixed aggregates
                             if "news.google.com" in link.lower() and ("/topics/" in link.lower() or "/stories/" in link.lower() or "/publications/" in link.lower()):
                                 continue
                             
                             if status_callback:
-                                status_callback(f"Scraping ({scraped_count+1}/5): {link[:40]}...", "info", "router", 12 + scraped_count * 2)
+                                status_callback(f"Scraping ({scraped_count+1}/{max_scraped}): {link[:40]}...", "info", "router", 12 + scraped_count * (2 if not is_predictive else 0.5))
                             
                             text = self.web_search.scrape_url(link)
                             if text and len(text.strip()) > 200:
+                                # Apply word-based Jaccard similarity deduplication to filter duplicate sites/syndicated pages
+                                def get_words(t):
+                                    return set(re.findall(r'\w+', t.lower()))
+                                
+                                new_words = get_words(text)
+                                is_dup = False
+                                for prev_text in scraped_raw_texts:
+                                    prev_words = get_words(prev_text)
+                                    if new_words and prev_words:
+                                        intersection_len = len(new_words.intersection(prev_words))
+                                        union_len = len(new_words.union(prev_words))
+                                        if union_len > 0:
+                                            jaccard = intersection_len / union_len
+                                            if jaccard > 0.65: # 65% overlap is duplicate
+                                                is_dup = True
+                                                break
+                                if is_dup:
+                                    continue
+                                
+                                scraped_raw_texts.append(text)
                                 scraped_pages.append(
                                     f"=== START SCRAPED PAGE ===\nURL: {link}\nContent:\n{text[:char_limit]}\n=== END SCRAPED PAGE ==="
                                 )
@@ -2062,6 +2091,13 @@ class AgentOrchestrator:
             task_type = mode.upper()
         else:
             task_type = self._classify_task(router_llm, prompt)
+            
+        if active_web_search and (not isinstance(mode, str) or mode.lower() == "auto"):
+            if is_predictive:
+                task_type = "CODING"
+            else:
+                task_type = "SIMPLE"
+                
         if status_callback:
             status_callback(f"Task classified as: {task_type}", "info", "router", 12)
 
