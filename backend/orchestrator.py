@@ -1863,8 +1863,30 @@ class AgentOrchestrator:
                 if not search_query or len(search_query) < 3:
                     search_query = prompt[:80]
 
+                # Calculate dynamic character cap per page based on actual available memory limits
+                char_limit = 6000
+                if torch and torch.cuda.is_available():
+                    try:
+                        free_vram, total_vram = torch.cuda.mem_get_info(0)
+                        free_vram_gb = free_vram / (1024 ** 3)
+                        if free_vram_gb > 6.0:
+                            char_limit = 12000
+                        elif free_vram_gb > 3.0:
+                            char_limit = 9000
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        free_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+                        if free_ram_gb > 16.0:
+                            char_limit = 12000
+                        elif free_ram_gb > 8.0:
+                            char_limit = 9000
+                    except Exception:
+                        pass
+
                 if status_callback:
-                    status_callback(f"Searching: '{search_query}'...", "info", "router", 8)
+                    status_callback(f"Searching: '{search_query}'... (Limit: {char_limit} chars/page)", "info", "router", 8)
                 
                 results = self.web_search.search(search_query, max_results=5)
                 
@@ -1892,7 +1914,7 @@ class AgentOrchestrator:
                             text = self.web_search.scrape_url(link)
                             if text and len(text.strip()) > 200:
                                 scraped_pages.append(
-                                    f"=== START SCRAPED PAGE ===\nURL: {link}\nContent:\n{text[:6000]}\n=== END SCRAPED PAGE ==="
+                                    f"=== START SCRAPED PAGE ===\nURL: {link}\nContent:\n{text[:char_limit]}\n=== END SCRAPED PAGE ==="
                                 )
                                 scraped_count += 1
                 
