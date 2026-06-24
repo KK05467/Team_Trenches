@@ -28,3 +28,6 @@ statsmodels>=0.14.0
 cryptography>=42.0.0
 scapy>=2.5.0
 pyjwt>=2.8.0
+pycryptodome>=3.20.0
+python-jose>=3.3.0
+pyopenssl>=24.0.0
