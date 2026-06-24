@@ -982,8 +982,18 @@ class AgentOrchestrator:
         result = self._call_model(router_llm, p, max_tokens=10, temperature=0.1)
         upper = str(result).strip().upper()
         
-        # Override classification if the intent is purely search/weather/news and doesn't ask to create code
+        # Override classification if strong coding indicators are present
         prompt_lower = prompt.lower()
+        strong_code_indicators = [
+            "sandboxdatahelper", "plotly", "pandas", "dataframe", "numpy", "matplotlib",
+            "write a python", "write python", "python script", "implement a python",
+            "write code to", "write a code to", "plotly layout", "forecast close price",
+            "standardized predictive_metrics"
+        ]
+        if any(kw in prompt_lower for kw in strong_code_indicators):
+            return "CODING"
+
+        # Override classification if the intent is purely search/weather/news and doesn't ask to create code
         search_intents = ["fetch from web", "search the web", "search for", "google for", "latest news", "weather news", "current weather", "weather of"]
         code_intent_kws = ["write code", "write a code", "javascript code", "python code", "c++ code", "java code", "html code", "css code", "write a script", "code for", "script to", "build", "implement"]
         has_code_intent = any(kw in prompt_lower for kw in code_intent_kws)
@@ -1002,7 +1012,12 @@ class AgentOrchestrator:
             return "SIMPLE"
             
         # Fallback: keyword scan on the original prompt for safety
-        code_keywords = ["write code", "write a code", "fix code", "debug", "script", "program", "compile", "function(", "def ", "class ", "import ", "coding", "develop", "web app", "website"]
+        code_keywords = [
+            "write code", "write a code", "fix code", "debug", "script", "program", "compile",
+            "function(", "def ", "class ", "import ", "coding", "develop", "web app", "website",
+            "implement", "plotly", "matplotlib", "dataframe", "numpy", "pandas", "scipy",
+            "sandboxdatahelper", "plot"
+        ]
         reason_keywords = ["explain", "prove", "derive", "why ", "how does", "in detail", "theory", "analyze", "compare", "calculate", "solve", "simulate", "trajectory", "numerical", "3d plot", "interactive plot"]
         if any(kw in prompt_lower for kw in code_keywords):
             return "CODING"
