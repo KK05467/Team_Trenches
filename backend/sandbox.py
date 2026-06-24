@@ -189,7 +189,7 @@ ALLOWED_MODULES = {
     # Quantum Physics & Rocket Dynamics
     'rocketpy', 'qiskit', 'qutip',
     # Cybersecurity & Cryptography / Network Simulation
-    'cryptography', 'scapy', 'jwt', 'pyjwt',
+    'cryptography', 'scapy', 'jwt', 'pyjwt', 'Crypto', 'jose',
     # Web & API requests (for real-time weather and stock prediction data)
     'requests', 'urllib', 'http',
 }
