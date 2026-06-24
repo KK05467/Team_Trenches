@@ -2045,6 +2045,60 @@ class AgentOrchestrator:
                                         router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
         return self._clean_cutoff_notes(res)
 
+    def _clean_synthesis_format(self, final_response, code):
+        """Ensures that explanation text is not wrapped in code blocks,
+        and that the python script code is strictly wrapped in a ```python``` block at the end.
+        """
+        response_clean = final_response.strip()
+        
+        # 1. If the model wrapped the entire response in a single code block, strip it
+        if (response_clean.startswith("```python") or response_clean.startswith("```")) and response_clean.endswith("```"):
+            lines = response_clean.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1] == "```":
+                lines = lines[:-1]
+            response_clean = "\n".join(lines).strip()
+            
+        # 2. Extract code blocks from the response
+        import re
+        code_blocks = re.findall(r'```python[\s\S]*?```|```[\s\S]*?```', response_clean)
+        
+        # Check if the actual python code is already present inside a code block
+        has_actual_code_block = False
+        for block in code_blocks:
+            block_content = re.sub(r'^```(python)?\n|```$', '', block, flags=re.IGNORECASE).strip()
+            code_lines = [l.strip() for l in code.split("\n") if l.strip() and not l.strip().startswith("#")]
+            matching_lines = sum(1 for line in code_lines[:10] if line in block_content)
+            if matching_lines >= min(3, len(code_lines)):
+                has_actual_code_block = True
+                break
+                
+        if has_actual_code_block:
+            cleaned_response = response_clean
+            for block in code_blocks:
+                block_content = re.sub(r'^```(python)?\n|```$', '', block, flags=re.IGNORECASE).strip()
+                is_this_code = False
+                code_indicators = ["import ", "def ", "class ", " = ", "print(", "sol = ", "plt."]
+                if any(ind in block_content for ind in code_indicators):
+                    is_this_code = True
+                
+                # If it's the actual code block, leave it alone
+                code_lines = [l.strip() for l in code.split("\n") if l.strip() and not l.strip().startswith("#")]
+                matching_lines = sum(1 for line in code_lines[:10] if line in block_content)
+                if matching_lines >= min(3, len(code_lines)):
+                    is_this_code = True
+                    
+                if not is_this_code:
+                    cleaned_response = cleaned_response.replace(block, block_content)
+            return cleaned_response
+        else:
+            cleaned_response = response_clean
+            for block in code_blocks:
+                block_content = re.sub(r'^```(python)?\n|```$', '', block, flags=re.IGNORECASE).strip()
+                cleaned_response = cleaned_response.replace(block, block_content)
+            return f"{cleaned_response}\n\n```python\n{code}\n```"
+
     def _synthesize_coding_response(self, prompt, compiled_plan, code, output,
                                    router_ctx, oc_ctx, ds_ctx, gen_tokens, gen_temp, status_callback=None):
         """Synthesize a beautiful, reasoning-like structured response from successful execution."""
@@ -2090,6 +2144,9 @@ class AgentOrchestrator:
             gen_temp, 
             system_prompt="You are a senior data scientist. Output a polished, professional markdown report."
         ))
+        
+        # Apply strict defensive layout formatting filter
+        final_response = self._clean_synthesis_format(final_response, code)
         
         viz = self._check_3d_gate(prompt, final_response, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
         if status_callback:
