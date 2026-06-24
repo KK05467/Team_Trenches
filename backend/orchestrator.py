@@ -193,6 +193,8 @@ class AgentOrchestrator:
                 print(f"📐 DMA: Auto-context ceiling = {self.max_auto_ctx} tokens (based on {total_vram_gb:.0f} GB VRAM)")
             except Exception:
                 pass
+        self.context_length = self.max_auto_ctx
+        print(f"🧠 DMA: Set default context length to {self.context_length} tokens")
         print(f"🧠 DMA: Detected {self.total_ram_gb:.0f} GB RAM → "
               f"Safety threshold = {self.ram_safety_gb:.1f} GB "
               f"(evict when free < {self.ram_safety_gb:.1f} GB)")
@@ -2006,11 +2008,11 @@ class AgentOrchestrator:
                 # In standard shared-VRAM mode, keep context sizes tight to prevent OOM conflicts.
                 router_ctx = min(router_ctx_cap, est_tokens + self.max_tokens)
                 ds_ctx = min(ds_ctx_cap, est_tokens + 8192)
-                oc_ctx = min(oc_ctx_cap, 8192)
+                oc_ctx = min(oc_ctx_cap, self.max_auto_ctx)
         else:
             router_ctx = min(self.context_length, router_ctx_cap)
             ds_ctx = min(self.context_length, ds_ctx_cap)
-            oc_ctx = min(8192, self.context_length, oc_ctx_cap)
+            oc_ctx = min(self.context_length, oc_ctx_cap)
             
         # Ensure context sizing prints to log for easier transparency
         if getattr(self, 'kaggle_hotswap_mode', False):
