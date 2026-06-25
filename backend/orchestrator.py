@@ -1651,10 +1651,13 @@ class AgentOrchestrator:
                     "4. Ensure there are no JavaScript syntax errors or undefined variables.\n\n"
                     "Output ONLY the complete, corrected HTML page inside ```html``` blocks."
                 )
+                fix_token_est = len(fix_p) // 3
+                fix_max_tokens = max(512, oc_ctx - fix_token_est - 100)
+                fix_max_tokens = min(fix_max_tokens, gen_tokens)
                 html_fixed = self._call_model(
                     coder_llm, 
                     fix_p, 
-                    max_tokens=gen_tokens, 
+                    max_tokens=fix_max_tokens, 
                     temperature=gen_temp,
                     system_prompt=(
                         "You are an expert JavaScript, WebGL, Three.js, and Plotly.js coder.\n"
@@ -1698,10 +1701,13 @@ class AgentOrchestrator:
             "Output ONLY code in ```python``` blocks.\n\n"
             f"Topic Context:\n{clean_plan[:3000]}"
         )
+        viz_token_est = len(viz_prompt) // 3
+        viz_max_tokens = max(512, oc_ctx - viz_token_est - 100)
+        viz_max_tokens = min(viz_max_tokens, gen_tokens)
         viz_code = self._call_model(
             coder_llm, 
             viz_prompt, 
-            max_tokens=gen_tokens, 
+            max_tokens=viz_max_tokens, 
             temperature=gen_temp,
             system_prompt=(
                 "You are an expert Python coder. Write ONLY valid Python code inside a single ```python``` code block. "
