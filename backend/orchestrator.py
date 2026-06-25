@@ -864,10 +864,12 @@ class AgentOrchestrator:
         start_chunk = '\n'.join(start_lines)
         end_chunk = '\n'.join(end_lines)
         
-        # Safety net: Don't spend hours summarizing a 500MB file,
-        # and guarantee that the summarization prompt fits inside the router_llm context window.
+        # Safety net: guarantee the summarization prompt fits inside the router_llm context window.
+        # Use 300 token overhead buffer to account for chat template markers (BOS/EOS, role tags,
+        # DeepSeek/Qwen special tokens like <｜User｜> etc.) that llama-cpp adds internally.
         n_ctx = router_llm.n_ctx() if hasattr(router_llm, "n_ctx") else 8192
-        max_middle_tokens = max(512, n_ctx - max_summary_tokens - 150)
+        chat_template_overhead = 300
+        max_middle_tokens = max(512, n_ctx - max_summary_tokens - chat_template_overhead)
         
         if hasattr(router_llm, "tokenize"):
             est_middle_tokens = len(router_llm.tokenize(middle_chunk.encode('utf-8')))
@@ -875,21 +877,29 @@ class AgentOrchestrator:
             est_middle_tokens = len(middle_chunk) // 3
             
         if est_middle_tokens > max_middle_tokens:
-            allowed_chars = int(max_middle_tokens * 3.2)
+            allowed_chars = int(max_middle_tokens * 3.0)
             half = allowed_chars // 2
             middle_chunk = middle_chunk[:half] + "\n...[TRUNCATED MIDDLE TO FIT CONTEXT]...\n" + middle_chunk[-half:]
             
         compress_prompt = f"Summarize this middle section concisely. Keep all logic, facts, and code structure intact:\n{middle_chunk}"
         
-        if isinstance(router_llm, TransformerWrapper):
-            middle_summary = router_llm(compress_prompt, max_tokens=max_summary_tokens)
-        else:
-            middle_summary = router_llm.create_chat_completion(
-                messages=[{"role": "user", "content": compress_prompt}], 
-                max_tokens=max_summary_tokens
-            )['choices'][0]['message']['content']
+        # Route through _call_model so it gets the same overflow protection as all other calls
+        middle_summary = self._call_model(router_llm, compress_prompt, max_tokens=max_summary_tokens, temperature=0.3)
             
         crunched = f"{start_chunk}\n\n[--- CRUNCHED SUMMARY OF MIDDLE SECTION ---]\n{middle_summary}\n[--- END SUMMARY ---]\n\n{end_chunk}"
+        
+        # Post-crunch verification: if crunched output STILL exceeds budget, hard-truncate
+        if hasattr(router_llm, "tokenize"):
+            final_tokens = len(router_llm.tokenize(crunched.encode('utf-8')))
+        else:
+            final_tokens = len(crunched) // 3
+        if final_tokens > prompt_token_budget:
+            # Hard truncate: keep first 30% and last 70% by character count
+            budget_chars = int(prompt_token_budget * 3)
+            top_keep = int(budget_chars * 0.3)
+            bottom_keep = int(budget_chars * 0.7)
+            crunched = crunched[:top_keep] + "\n...[HARD TRUNCATED TO FIT CONTEXT]...\n" + crunched[-bottom_keep:]
+            
         return crunched
 
     # =========================================================================
@@ -2035,28 +2045,15 @@ class AgentOrchestrator:
                         max_scraped = 8
                         char_limit = 2000
                 else:
+                    # Derive char_limit from the ACTUAL context ceiling rather than raw VRAM/RAM.
+                    # This prevents scraping 60k chars of content when the model context is only 8k tokens.
+                    # Formula: (context_ceiling × 0.60 prompt share × 3 chars/token) / max_scraped pages
                     max_results = 5
                     max_scraped = 5
-                    char_limit = 6000
-                    if torch and torch.cuda.is_available():
-                        try:
-                            free_vram, total_vram = torch.cuda.mem_get_info(0)
-                            free_vram_gb = free_vram / (1024 ** 3)
-                            if free_vram_gb > 6.0:
-                                char_limit = 12000
-                            elif free_vram_gb > 3.0:
-                                char_limit = 9000
-                        except Exception:
-                            pass
-                    else:
-                        try:
-                            free_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
-                            if free_ram_gb > 16.0:
-                                char_limit = 12000
-                            elif free_ram_gb > 8.0:
-                                char_limit = 9000
-                        except Exception:
-                            pass
+                    usable_prompt_tokens = int(ds_ctx_est * 0.60)
+                    char_limit = max(1500, (usable_prompt_tokens * 3) // max_scraped)
+                    # Cap at sensible maximum — even with 32k context, no single page needs > 8000 chars
+                    char_limit = min(8000, char_limit)
 
                 if status_callback:
                     status_callback(f"Searching: '{search_query}'... (Limit: {char_limit} chars/page)", "info", "router", 8)
