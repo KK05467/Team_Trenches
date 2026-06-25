@@ -707,30 +707,58 @@ class AgentOrchestrator:
         """Remove <think>...</think> blocks from DeepSeek R1 output."""
         if not text:
             return text
-            
-        # Handle unclosed <think> tag gracefully
+
+        # --- Case 1: Properly closed think tag — strip the block entirely ---
+        if '<think>' in text and '</think>' in text:
+            cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+            if cleaned:
+                return cleaned
+            # The entire answer was inside the tags — return contents without tags
+            return re.sub(r'</?think>', '', text).strip()
+
+        # --- Case 2: Unclosed <think> tag (model ran out of context mid-think) ---
         if '<think>' in text and '</think>' not in text:
-            before_think, after_think = text.split('<think>', 1)
-            if '```' in after_think:
-                # Close the think block right before the first code fence
-                after_think = after_think.replace('```', '</think>\n```', 1)
-                text = before_think + '<think>' + after_think
-            else:
-                # If there's no code fence and before_think is empty, the model only generated thinking.
-                # Do NOT return empty. Return the thinking process (without <think> tag) so the user gets a response.
-                if not before_think.strip():
-                    return after_think.strip()
+            before_think, inner = text.split('<think>', 1)
+            # If there's real content before the thinking block, return that
+            if before_think.strip():
                 return before_think.strip()
-                
-        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-        
-        if cleaned:
-            return cleaned
-            
-        # If stripping removed EVERYTHING, it means the model put its entire answer 
-        # inside the think block. We must strip ONLY the tags, keeping the content!
-        text_without_tags = re.sub(r'</?think>', '', text)
-        return text_without_tags.strip()
+
+            # The model wrote its ENTIRE output inside <think> without closing.
+            # We need to salvage the best final answer from the inner monologue.
+            # Strategy: find the LAST paragraph that looks like a structured answer
+            # (not a "Wait, let me check..." self-questioning line).
+            conversational_prefixes = (
+                'okay', 'wait', 'so ', 'but ', 'hmm', 'let me', 'let\'s',
+                'i think', 'i need', 'i should', 'i must', 'i realize',
+                'actually', 'alternatively', 'now,', 'thus,', 'therefore,',
+                'however,', 'also,', 'first,', 'second,', 'third,',
+                'step ', 'note ', 'note:', 'so,', 'anyway', 'in summary'
+            )
+            lines = inner.strip().split('\n')
+            # Walk backwards to find where the final structured answer begins
+            answer_start = len(lines)
+            for i in range(len(lines) - 1, -1, -1):
+                stripped = lines[i].strip().lower()
+                if not stripped:
+                    continue
+                # If line starts a structured section, mark it as the start
+                if (lines[i].strip().startswith(('##', '**', '1.', '2.', '3.', '-')) or
+                        (len(stripped) > 30 and not stripped.startswith(conversational_prefixes))):
+                    answer_start = i
+                else:
+                    # Stop searching once we hit a conversational line after a structured one
+                    if answer_start < len(lines):
+                        break
+
+            final_lines = lines[answer_start:]
+            final_content = '\n'.join(final_lines).strip()
+            if final_content and len(final_content) > 50:
+                return final_content
+            # Last resort: return entire inner content (at least user gets something)
+            return inner.strip()
+
+        # --- Case 3: No think tags at all — return as-is ---
+        return text.strip()
 
 
 
@@ -1618,10 +1646,24 @@ class AgentOrchestrator:
         )
         html_extract = Sandbox.extract_code(html_code)
 
+        # CRITICAL GUARD: If the model returned nothing (ran out of tokens), skip Strategy 1
+        # entirely and fall through to the Python Plotly fallback. Sending '\n' to the iframe
+        # causes the blank sandbox bug.
+        html_is_valid_document = (
+            html_extract and
+            html_extract.strip() and
+            ("<html" in html_extract.lower() or "<script" in html_extract.lower() or "<!doctype" in html_extract.lower())
+        )
+
+        if not html_is_valid_document:
+            if status_callback:
+                status_callback("HTML generation returned empty. Falling back to Python Plotly...", "warning", "opencode", 96)
+            html_extract = ""
+
         # Validate initially
         html_valid = False
         html_error = ""
-        if html_extract and ("<html" in html_extract.lower() or "<script" in html_extract.lower()):
+        if html_is_valid_document:
             html_valid, html_error = self._verify_html_javascript(html_extract)
 
         # Pre-check: Bypass verification immediately if Node is missing or if it's a browser-environment mock error
@@ -1632,7 +1674,7 @@ class AgentOrchestrator:
             if is_node_missing or is_mock_error:
                 bypass_verification = True
 
-        if not bypass_verification:
+        if html_is_valid_document and not bypass_verification:
             # Reflexion loop for Strategy 1: Max 2 self-fix attempts
             for attempt in range(2):
                 if html_valid:
@@ -1667,14 +1709,14 @@ class AgentOrchestrator:
                     )
                 )
                 fixed_extract = Sandbox.extract_code(html_fixed)
-                if fixed_extract:
+                if fixed_extract and ("<html" in fixed_extract.lower() or "<script" in fixed_extract.lower()):
                     html_extract = fixed_extract
                     html_valid, html_error = self._verify_html_javascript(html_extract)
                 else:
                     html_valid = False
                     html_error = "No code block found in response."
 
-        if (html_valid or bypass_verification) and html_extract:
+        if (html_valid or bypass_verification) and html_extract and html_extract.strip():
             warning_msg = ""
             if bypass_verification:
                 warning_msg = "\n<!-- Note: HTML verification bypassed due to environment/runtime differences. Rendering best-effort. -->"
