@@ -1576,9 +1576,9 @@ class AgentOrchestrator:
         # Strip all markdown code blocks to prevent opencode from trying to fix/debug them
         clean_plan = re.sub(r"```[a-zA-Z0-9_]*\n[\s\S]*?\n```", "", clean_plan)
         
-        # Safety limit for context window bounds
-        if len(clean_plan) > 1500:
-            clean_plan = clean_plan[:1500]
+        # Reasonable limit — keep enough physics context for the 3D generator
+        if len(clean_plan) > 3000:
+            clean_plan = clean_plan[:3000]
         
         coder_llm = self._get_model("opencode", required_ctx=oc_ctx)
 
@@ -1587,62 +1587,33 @@ class AgentOrchestrator:
         if status_callback:
             status_callback("Generating HTML Artifact (Frontend Sandbox)...", "info", "opencode", 95)
         html_prompt = (
-            "You are a JavaScript WebGL, Three.js, and Plotly.js visualization expert.\n"
-            "Write a COMPLETE, SELF-CONTAINED HTML page that creates a premium, interactive 3D physics, mathematical, or biological simulation.\n"
+            "Write a COMPLETE, SELF-CONTAINED HTML page creating an interactive 3D simulation.\n"
             "RULES:\n"
-            "1. Use a single HTML file with inline <script> and <style> tags.\n"
-            "2. Load Three.js (r128) or Plotly.js from CDN based on which is best suited (Three.js for physical/biological animation, Plotly.js for mathematical trajectories/surfaces/scatter plots):\n"
-            "   - Three.js: <script src='https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'></script> and <script src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js'></script>\n"
-            "   - Plotly.js: <script src='https://cdn.plot.ly/plotly-2.24.1.min.js'></script>\n"
-            "3. Use a sleek dark space/scientific theme: body background '#0d0d0d', text color '#e0e0e0', font-family 'Inter', system-ui, sans-serif.\n"
-            "   - Plotly Rules: If using Plotly, you MUST set layout options: paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: {color: '#e0e0e0'}, and template: 'plotly_dark' to blend with the dark background.\n"
-            "4. You MUST include interactive glassmorphic UI controls at the bottom or corner of the screen:\n"
-            "   - Add range sliders (`<input type='range'>`) for all primary variables in the problem (e.g., field strengths like E_y and B_z, charge, mass, initial velocity components, or other simulation parameters).\n"
-            "   - Add UI labels displaying the exact current value of each slider.\n"
-            "   - Add a Play/Pause button (`||` / `▶`) and a Reset button (`↻`) to control the simulation.\n"
-            "   - Style the control panel using premium glassmorphism: background: rgba(30, 30, 30, 0.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); padding: 20px; border-radius: 12px; color: white; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37).\n"
-            "5. To make it great for understanding, you MUST implement motion and solver calculations:\n"
-            "   - Solve the differential equations/physics (like Verlet, Euler, or RK4 trajectory integration) directly inside your JavaScript loop.\n"
-            "   - Use a small integration step size (e.g., dt = 1e-8 for atomic/proton scales, or dt = 0.005 for macro physics) or a simple Runge-Kutta 4th order (RK4) step to prevent trajectories from exploding or diverging.\n"
-            "   - Make the simulation respond dynamically when the user drags the sliders. If the simulation is paused, changing sliders should update the preview or reset the integration state.\n"
-            "   - Draw colored arrow helpers (e.g., using THREE.ArrowHelper) to visualize force, velocity, electric field, or magnetic field vectors dynamically.\n"
-            "   - If using Three.js: Run the integration inside a `requestAnimationFrame` loop that advances the physics state by `dt` every frame if 'playing' is true. Animate a particle (representing the proton/object) moving along the path.\n"
-            "   - If using Plotly.js: Use `Plotly.animate` or redraw the plot with new points to create a smooth movement.\n"
-            "6. Make sure to use only VALID Three.js/Plotly.js APIs. Timing rule: instantiate new THREE.OrbitControls(camera, renderer.domElement) ONLY AFTER both the camera and WebGL renderer are fully initialized and the renderer canvas is appended. NEVER use non-existent APIs like ArcGeometry (use RingGeometry, TorusGeometry, or custom BufferGeometry curves for paths).\n"
-            "7. Define all animation variables (like clock/time/frameCount) at the top of your script scope so they are never undefined.\n"
-            "8. IMPORTANT: The topic description below might contain Python instructions or python code fragments. You MUST translate all math solving, array operations, and plotting logic into pure JavaScript inside the HTML page. Do NOT write Python code, do NOT output Python code blocks, and do NOT refuse this request. Simply write the complete simulation in HTML/JS.\n"
-            "9. Output the COMPLETE HTML page inside ```html``` blocks.\n"
-            "10. SINGULARITY SAFETY: For equations with asymptotes or division-by-zero regions (like (V - b) in the van der Waals equation where V must be > b), you MUST ensure the swept ranges are strictly bounded outside the singular boundary (e.g., start V sweep range at 1.15 * b or higher). Never calculate division-by-zero, square roots of negative values, or log of non-positive numbers which produce NaN or Infinity values, as this will crash the WebGL/Plotly.js rendering context.\n"
-            "11. PHYSICAL ACCURACY & SCALING: When plotting physical equations of state (like van der Waals P-V-T diagrams), you MUST calculate the exact physical coordinates using the specified physical constants (e.g., real a, b, R values) and label axes with the correct physical units (e.g. Volume in L/mol, Temperature in K, Pressure in atm). Because values can spike to infinity near asymptotes (e.g. as V -> b), you MUST clip or cap the dependent variable (e.g., cap P at 5 * P_c or 10 * P_c) to prevent the scale from shrinking the rest of the surface details into a flat line. Do NOT plot random sine waves or generic noise grids; calculate the actual formula.\n"
-            "12. BIOLOGICAL 3D STRUCTURES: For biological or molecular structure visualizations (DNA helices, proteins, mitochondria, cell organelles, molecular bonds), "
-            "you MUST use Three.js (NOT Plotly) and follow these rules:\n"
-            "   - HIDE all X/Y/Z axis lines, axis labels, grid planes, and tick marks. Biological structures should float in a clean, immersive dark void.\n"
-            "   - Use realistic, science-textbook color palettes: e.g., Adenine=#FF6B6B (red), Thymine=#4ECDC4 (teal), Guanine=#45B7D1 (blue), Cytosine=#96CEB4 (green), phosphate backbone=#FFD93D (gold), sugar=#FF8A5C (orange).\n"
-            "   - Add smooth ambient lighting + directional light for depth perception. Use MeshPhongMaterial or MeshStandardMaterial (NOT MeshBasicMaterial) for realistic shading.\n"
-            "   - Implement mouse-based OrbitControls so the user can rotate and zoom around the structure freely.\n"
-            "   - Add a subtle slow auto-rotation animation so the structure gently spins when idle.\n"
-            "   - Add labeled annotations or floating HTML tooltips for key structural components (e.g., 'Major Groove', 'Minor Groove', 'Hydrogen Bond').\n"
-            "13. BIO-INTERACTIVE CONTROLS: For biological structures, include glassmorphic controls for:\n"
-            "   - A 'Rotation Speed' slider to control the auto-rotation speed.\n"
-            "   - Toggle buttons to show/hide structural components (e.g., 'Show Backbone', 'Show Base Pairs', 'Show Hydrogen Bonds').\n"
-            "   - A 'Zoom' slider or mouse scroll zoom.\n"
-            "   - An info panel showing the name and function of the currently highlighted component on hover.\n\n"
+            "1. Single HTML file with inline <script>/<style>. Load Plotly.js (<script src='https://cdn.plot.ly/plotly-2.24.1.min.js'></script>) for trajectories/surfaces, or Three.js (r128) for animations.\n"
+            "2. Dark theme: body background '#0d0d0d', text '#e0e0e0'. Plotly: paper_bgcolor/plot_bgcolor='rgba(0,0,0,0)', template='plotly_dark'.\n"
+            "3. Add glassmorphic control panel (background: rgba(30,30,30,0.65); backdrop-filter: blur(12px); border-radius: 12px) with sliders for key variables, Play/Pause, Reset buttons.\n"
+            "4. Implement RK4 or Verlet integration in JS. Use small dt (1e-8 for atomic scale, 0.005 for macro). For protons: compute cyclotron period T=2*pi*m/(q*B), total_time=N_cycles*T.\n"
+            "5. Translate any Python math into pure JavaScript. Output complete HTML in ```html``` blocks.\n"
+            "6. SINGULARITY SAFETY: Bound ranges away from division-by-zero. Clip extreme values.\n"
+            "7. For Three.js: use OrbitControls AFTER renderer is appended. Never use non-existent APIs like ArcGeometry.\n"
+            "8. For biological structures (DNA, proteins): use Three.js with realistic colors, MeshPhongMaterial, OrbitControls, auto-rotation, hide axes.\n\n"
             f"Topic: {clean_plan}"
         )
+
+        # Dynamically calculate available tokens to prevent context window overflow
+        prompt_token_est = len(html_prompt) // 3  # conservative: ~3 chars per token
+        html_max_tokens = max(512, oc_ctx - prompt_token_est - 100)
+        html_max_tokens = min(html_max_tokens, gen_tokens)  # never exceed global gen limit
+
         html_code = self._call_model(
             coder_llm, 
             html_prompt, 
-            max_tokens=gen_tokens, 
+            max_tokens=html_max_tokens, 
             temperature=gen_temp,
             system_prompt=(
-                "You are an expert JavaScript, WebGL, Three.js, and Plotly.js coder.\n"
-                "To ensure the JavaScript runs flawlessly without ReferenceErrors or TypeErrors:\n"
-                "1. Declare all variables used across different functions (like scene, camera, renderer, controls, particles, clock, fields) globally at the very top of your script block.\n"
-                "2. When instantiating OrbitControls, always pass both parameters: new THREE.OrbitControls(camera, renderer.domElement).\n"
-                "3. Never reference the window or document object before they are fully loaded. Put your script at the bottom of the body element, or wrap initialization in window.addEventListener('DOMContentLoaded', ...).\n"
-                "4. Never use non-existent geometries like ArcGeometry. To draw a curve path, construct a custom curve using new THREE.CatmullRomCurve3(points), get the points with curve.getPoints(100), and assign them to a new THREE.BufferGeometry().setFromPoints(points).\n"
-                "5. Ensure the WebGL renderer has a fallback/check so it doesn't crash if canvas contexts are initialized in limited environments. Wrap canvas instantiation and getContext calls in try-catch blocks where appropriate.\n"
-                "6. Output ONLY the complete, self-contained HTML document inside ```html``` code blocks."
+                "You are an expert JavaScript/Plotly.js/Three.js coder. "
+                "Declare all variables globally. Use DOMContentLoaded. "
+                "Output ONLY the complete HTML document inside ```html``` blocks."
             )
         )
         html_extract = Sandbox.extract_code(html_code)
@@ -2048,9 +2019,10 @@ class AgentOrchestrator:
         if past_experience:
             context_blocks.append(
                 f"=== VERIFIED SCIENTIFIC REFERENCE KNOWLEDGE ===\n"
-                f"The following is a verified, ground-truth physics/math/code derivation. "
-                f"Study the exact mathematical formulas, integration boundaries, syntax, and logic used in this reference. "
-                f"You must strictly apply these exact same proven physical principles and mathematical techniques to solve the User's new query.\n\n"
+                f"The following is a verified derivation that demonstrates the correct APPROACH and TECHNIQUE for solving this type of problem. "
+                f"Study the mathematical method, the integration technique, the code structure, and the overall solution strategy used here. "
+                f"CRITICAL: Always use the EXACT numerical values (constants, field strengths, masses, charges, velocities) from the User Query below — "
+                f"NEVER copy numerical values from this reference if they differ from what the user specifies.\n\n"
                 f"{past_experience.strip()}\n"
                 f"==============================================="
             )
