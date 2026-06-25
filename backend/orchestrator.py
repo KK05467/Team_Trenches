@@ -822,9 +822,15 @@ class AgentOrchestrator:
         total_chars = sum(len(l) for l in lines)
         chars_allowed = prompt_token_budget * 3
         
-        # 30% of allowed budget at the top, 70% at the bottom
-        top_char_budget = int(chars_allowed * 0.3)
-        bottom_char_budget = int(chars_allowed * 0.7)
+        # Allocate 25% of allowed budget to top chunk, 55% to bottom chunk, and 20% to middle summary
+        top_ratio = 0.25
+        bottom_ratio = 0.55
+        summary_ratio = 0.20
+        
+        top_char_budget = int(chars_allowed * top_ratio)
+        bottom_char_budget = int(chars_allowed * bottom_ratio)
+        max_summary_tokens = max(256, int(prompt_token_budget * summary_ratio))
+        max_summary_tokens = min(1024, max_summary_tokens)
         
         start_lines = []
         start_chars = 0
@@ -858,18 +864,29 @@ class AgentOrchestrator:
         start_chunk = '\n'.join(start_lines)
         end_chunk = '\n'.join(end_lines)
         
-        # Safety net: Don't spend hours summarizing a 500MB file
-        if len(middle_chunk) > 50000:
-            middle_chunk = middle_chunk[:25000] + "\n...[SNIPPED EXTREME LENGTH]...\n" + middle_chunk[-25000:]
+        # Safety net: Don't spend hours summarizing a 500MB file,
+        # and guarantee that the summarization prompt fits inside the router_llm context window.
+        n_ctx = router_llm.n_ctx() if hasattr(router_llm, "n_ctx") else 8192
+        max_middle_tokens = max(512, n_ctx - max_summary_tokens - 150)
+        
+        if hasattr(router_llm, "tokenize"):
+            est_middle_tokens = len(router_llm.tokenize(middle_chunk.encode('utf-8')))
+        else:
+            est_middle_tokens = len(middle_chunk) // 3
+            
+        if est_middle_tokens > max_middle_tokens:
+            allowed_chars = int(max_middle_tokens * 3.2)
+            half = allowed_chars // 2
+            middle_chunk = middle_chunk[:half] + "\n...[TRUNCATED MIDDLE TO FIT CONTEXT]...\n" + middle_chunk[-half:]
             
         compress_prompt = f"Summarize this middle section concisely. Keep all logic, facts, and code structure intact:\n{middle_chunk}"
         
         if isinstance(router_llm, TransformerWrapper):
-            middle_summary = router_llm(compress_prompt, max_tokens=1024)
+            middle_summary = router_llm(compress_prompt, max_tokens=max_summary_tokens)
         else:
             middle_summary = router_llm.create_chat_completion(
                 messages=[{"role": "user", "content": compress_prompt}], 
-                max_tokens=1024
+                max_tokens=max_summary_tokens
             )['choices'][0]['message']['content']
             
         crunched = f"{start_chunk}\n\n[--- CRUNCHED SUMMARY OF MIDDLE SECTION ---]\n{middle_summary}\n[--- END SUMMARY ---]\n\n{end_chunk}"
