@@ -619,6 +619,22 @@ class AgentOrchestrator:
                 "n_gpu_layers": self.gpu_layers if self.device_mode != "cpu" else 0,
                 "verbose": False
             }
+            # Restrict batch sizes and disable flash attention on older GPUs (like P100/T4)
+            # to prevent self-attention scratch buffer VRAM spikes and CUDA crashes.
+            is_older_gpu = False
+            if torch and torch.cuda.is_available():
+                try:
+                    major, _ = torch.cuda.get_device_capability(0)
+                    if major < 8:
+                        is_older_gpu = True
+                except Exception:
+                    pass
+            if is_older_gpu:
+                print("⚡ DMA: Older GPU detected (Compute Cap < 8.0). Restricting batch size & flash_attn to prevent VRAM crashes.")
+                kwargs["n_batch"] = 512
+                kwargs["n_ubatch"] = 256
+                kwargs["flash_attn"] = False
+
             # Dual-GPU: send heavy 7B models to GPU 1, lighter ones to GPU 0
             if self.dual_gpu_pipeline and model_key in ["deepseek_r1", "opencode"]:
                 kwargs["main_gpu"] = 1
