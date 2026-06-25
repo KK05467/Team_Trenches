@@ -2,6 +2,7 @@ import os
 import gc
 import re
 import json
+import time
 import psutil
 from backend.downloader import get_model_path, is_model_downloaded
 from backend.sandbox import Sandbox
@@ -483,7 +484,6 @@ class AgentOrchestrator:
 
     def _get_model(self, model_key, required_ctx=None):
         """Load a model with Dynamic Memory Allocator protection and dynamic context sizing."""
-        import time
         if required_ctx is None:
             required_ctx = self.context_length if self.context_length > 0 else 8192
 
@@ -960,7 +960,6 @@ class AgentOrchestrator:
                 arithmetic_clean = arithmetic_clean[len(prefix):]
         arithmetic_clean = arithmetic_clean.replace("?", "").strip()
         
-        import re
         if re.match(r"^[0-9+\-*/%().\s]+$", arithmetic_clean) and len(arithmetic_clean) > 0:
             return "SIMPLE"
 
@@ -2816,7 +2815,7 @@ class AgentOrchestrator:
                         if status_callback:
                             status_callback("Reasoning VERIFIED!", "success", "deepseek_r1", 80)
                         self.memory.save(prompt, ds_answer)
-                        router_llm = None; ds_llm = None; oc_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                        router_llm = None; ds_llm = None; gc.collect()
                         viz = self._check_3d_gate(prompt, ds_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
                         return f"### Verified Answer\n{ds_answer}{viz}"
 
@@ -2863,7 +2862,7 @@ class AgentOrchestrator:
                             status_callback("DeepSeek-R1's correction VERIFIED!", "success", "deepseek_r1", 80)
                         self.memory.save(prompt, vibe_answer)
                         self.memory.save_mistake(prompt, ds_answer, pg_out, vibe_answer)
-                        router_llm = None; ds_llm = None; oc_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                        router_llm = None; ds_llm = None; gc.collect()
                         viz = self._check_3d_gate(prompt, vibe_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
                         return f"### Verified Answer\n{vibe_answer}{viz}"
                     # Don't let ds_safe grow unboundedly — cap the appended errors
@@ -2930,7 +2929,7 @@ class AgentOrchestrator:
                             status_callback("Emergency Search Healing SUCCESSFUL!", "success", "deepseek_r1", 100)
                         self.memory.save(prompt, vibe_answer)
                         self.memory.save_mistake(prompt, ds_answer, pg_out, vibe_answer)
-                        router_llm = None; ds_llm = None; oc_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+                        router_llm = None; ds_llm = None; gc.collect()
                         viz = self._check_3d_gate(prompt, vibe_answer, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
                         return f"### Verified Answer\n{vibe_answer}{viz}"
             except Exception as es:
@@ -2954,7 +2953,7 @@ class AgentOrchestrator:
             except Exception as es:
                 print(f"Failed to save unverified reasoning draft: {es}")
 
-            router_llm = None; ds_llm = None; oc_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+            router_llm = None; ds_llm = None; gc.collect()
             viz = self._check_3d_gate(prompt, final_ans, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
             return f"### Verified Answer\n{final_ans}{viz}"
 
@@ -2965,7 +2964,7 @@ class AgentOrchestrator:
             ds_draft = self._strip_thinking(self._call_model(ds_llm, f"Provide a detailed answer:\n{ds_safe}", gen_tokens, gen_temp, system_prompt=reasoning_sys))
 
             compiled = ds_draft
-            router_llm = None; ds_llm = None; oc_llm = None; coder_llm = None; critic_llm = None; model = None; gc.collect()
+            router_llm = None; ds_llm = None; gc.collect()
             viz = self._check_3d_gate(prompt, compiled, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
             if status_callback:
                 status_callback("Done!", "success", "router", 100)

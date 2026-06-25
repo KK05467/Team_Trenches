@@ -341,7 +341,7 @@ except (ImportError, PermissionError) as e:
     result["error"] = str(e)
     result["restricted_block"] = True
 except MemoryError:
-    result["error"] = "MemoryError: Code exceeded the 256MB sandbox RAM limit."
+    result["error"] = "MemoryError: Code exceeded the 2 GB sandbox RAM limit."
 except Exception as e:
     result["error"] = f"{type(e).__name__}: {str(e)}"
 finally:

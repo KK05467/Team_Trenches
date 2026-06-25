@@ -325,10 +325,11 @@ def get_memory_count():
 def clear_all_memory():
     """Reset vector database / SQLite store."""
     try:
-        # Remove sqlite db file first, then reinitialize
-        path = orchestrator.memory.sqlite_path
-        if os.path.exists(path):
-            os.remove(path)
+        import shutil
+        db_path = orchestrator.memory.db_path
+        # Remove the entire persistent DB directory (ChromaDB + SQLite)
+        if os.path.exists(db_path):
+            shutil.rmtree(db_path, ignore_errors=True)
         orchestrator.memory = Memory()
         return {"status": "cleared"}
     except Exception as e:
