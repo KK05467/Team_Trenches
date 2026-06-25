@@ -2376,9 +2376,13 @@ class AgentOrchestrator:
                 ds_draft = self._strip_thinking(self._call_model(ds_llm, plan_p, gen_tokens, logic_temp, system_prompt=planner_sys))
 
                 # ── Phase 2: Reasoning Sandbox — Verify Logic ────────────────
-                if status_callback:
-                    status_callback(f"Reasoning Sandbox: Verifying logic (Attempt {rnd+1}/{max_rounds})...", "info", "deepseek_r1", 30 + rnd*10)
-                verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key="deepseek_r1", original_prompt=prompt)
+                use_logic_playground = self._is_playground_applicable(router_llm if router_llm else self._get_model("router", required_ctx=1024), prompt)
+                verified = True
+                pg_out = ""
+                if use_logic_playground:
+                    if status_callback:
+                        status_callback(f"Reasoning Sandbox: Verifying logic (Attempt {rnd+1}/{max_rounds})...", "info", "deepseek_r1", 30 + rnd*10)
+                    verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key="deepseek_r1", original_prompt=prompt)
 
                 if not verified:
                     if status_callback:
