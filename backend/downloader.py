@@ -62,10 +62,15 @@ def is_model_downloaded(model_key):
     if "/" in subfolder:
         subfolder = subfolder.split("/")[-1]
     target_dir = os.path.join(MODELS_DIR, subfolder, model_key)
-    for fname in filenames:
-        if not os.path.exists(os.path.join(target_dir, fname)):
-            return False
-    return True
+    
+    # Check standard nested structure
+    nested_exists = all(os.path.exists(os.path.join(target_dir, fname)) for fname in filenames)
+    if nested_exists:
+        return True
+        
+    # Check flat structure (common in Kaggle datasets)
+    flat_exists = all(os.path.exists(os.path.join(MODELS_DIR, fname)) for fname in filenames)
+    return flat_exists
 
 def get_model_path(model_key):
     """Get the local path for a model key, downloading it if not present (returns the path to the first shard/file)."""
@@ -77,6 +82,11 @@ def get_model_path(model_key):
     if "/" in subfolder:
         subfolder = subfolder.split("/")[-1]
         
+    # Check if it exists in a flat structure (Kaggle datasets)
+    flat_path = os.path.join(MODELS_DIR, definition["filename"])
+    if os.path.exists(flat_path):
+        return flat_path
+
     # Target directory under models/<subcategory>/<model_key>/
     target_dir = os.path.join(MODELS_DIR, subfolder, model_key)
     try:
