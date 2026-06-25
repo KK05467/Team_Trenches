@@ -159,6 +159,11 @@ async def fetch_real_dataset(category: str) -> List[Dict[str, Any]]:
             add_log(f"Successfully loaded MMLU-Pro dataset ({len(dataset)} items).")
             return [{"id": f"MMLU-Pro/{i}", "prompt": item["question"] + "\nOptions: " + str(item["options"]), "answer": item["answer"]} for i, item in enumerate(dataset)]
             
+        elif category == "SWE-bench Lite":
+            dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+            add_log(f"Successfully loaded SWE-bench Lite dataset ({len(dataset)} items).")
+            return [{"id": item["instance_id"], "prompt": item["problem_statement"], "repo": item["repo"], "commit": item["base_commit"], "answer": "N/A"} for item in dataset]
+            
     except Exception as e:
         add_log(f"Network / library issue: {str(e)}. Loading built-in high-fidelity dataset.")
     
@@ -201,6 +206,33 @@ async def execute_task_on_tpu(worker_id: int, category: str, problem: Dict[str, 
                     with STATE_LOCK:
                         BENCHMARK_STATE["workers"][worker_id]["status"] = f"[{model_name.upper()}] {msg}"
                         BENCHMARK_STATE["workers"][worker_id]["progress"] = int(pct)
+                
+                repo = problem.get("repo")
+                commit = problem.get("commit")
+                
+                # SWE-Bench: Clone repo temporarily and generate AST Map before querying agent
+                if repo and commit:
+                    def clone_and_map():
+                        import tempfile
+                        import subprocess
+                        import sys
+                        import os
+                        
+                        backend_dir = os.path.dirname(os.path.abspath(__file__))
+                        if backend_dir not in sys.path:
+                            sys.path.append(backend_dir)
+                        from repo_map import RepoMapGenerator
+                        
+                        with tempfile.TemporaryDirectory() as temp_dir:
+                            status_cb(f"Cloning {repo}...", "info", "system", 5)
+                            subprocess.run(["git", "clone", "--filter=blob:none", f"https://github.com/{repo}.git", temp_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run(["git", "checkout", commit], cwd=temp_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            
+                            status_cb("Generating AST Repo Map...", "info", "system", 10)
+                            repo_map = RepoMapGenerator(temp_dir).generate_map()
+                            return f"Repository Architecture Map:\n{repo_map}\n\nUser Issue:\n{prompt}"
+                            
+                    prompt = await asyncio.to_thread(clone_and_map)
                 
                 # Run the actual multi-agent reasoning/coding pipeline in a thread pool
                 response = await asyncio.to_thread(
