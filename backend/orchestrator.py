@@ -1954,6 +1954,7 @@ class AgentOrchestrator:
             "search the web", "search online", "search for", "google for",
             "latest news", "recent news", "breaking news", "current price of",
             "what is the price of", "stock price of", "weather in", "weather today",
+            "weather", "forecast", "temperature",
             "who won", "who lost", "last match", "latest match", "recent match",
             "score of", "match result", "election result", "box office",
             "release date", "when is", "when does", "when did",
