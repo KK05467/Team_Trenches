@@ -1570,6 +1570,10 @@ class AgentOrchestrator:
 
     def _execute_3d_generation(self, compiled_plan, router_ctx, oc_ctx, gen_tokens, gen_temp, status_callback=None):
         """Execute the actual 3D visualization generation (HTML + Plotly fallback)."""
+        import re
+        # Strip all markdown code blocks (```python ... ```) from compiled_plan to prevent opencode from trying to fix/debug them
+        clean_plan = re.sub(r"```[a-zA-Z0-9_]*\n[\s\S]*?\n```", "", compiled_plan)
+        
         coder_llm = self._get_model("opencode", required_ctx=oc_ctx)
 
         # ── Strategy 1: HTML/JS Artifact (frontend iframe sandbox) ────────
@@ -1617,7 +1621,7 @@ class AgentOrchestrator:
             "   - Toggle buttons to show/hide structural components (e.g., 'Show Backbone', 'Show Base Pairs', 'Show Hydrogen Bonds').\n"
             "   - A 'Zoom' slider or mouse scroll zoom.\n"
             "   - An info panel showing the name and function of the currently highlighted component on hover.\n\n"
-            f"Topic: {compiled_plan[:3000]}"
+            f"Topic: {clean_plan[:3000]}"
         )
         html_code = self._call_model(
             coder_llm, 
@@ -1715,7 +1719,7 @@ class AgentOrchestrator:
             "10. GRID RESOLUTION LIMIT: For 3D surface/contour plots, use a grid size of at most 25x25 or 30x30 points (e.g. np.linspace(..., 25) or np.linspace(..., 30)) to keep the output JSON compact, prevent streaming/rendering lag, and fit within context bounds.\n"
             "11. NO DEBUGGING COMMENTARY: The Topic section below contains context and code fragments. Do NOT try to fix, patch, or debug the code snippets in the Topic, and do NOT write comments about them. Write a complete, self-contained Python script from scratch that defines all required constants (like q, m, E, B), solves the system, creates the figure, and prints the JSON.\n\n"
             "Output ONLY code in ```python``` blocks.\n\n"
-            f"Topic Context:\n{compiled_plan[:3000]}"
+            f"Topic Context:\n{clean_plan[:3000]}"
         )
         viz_code = self._call_model(
             coder_llm, 
