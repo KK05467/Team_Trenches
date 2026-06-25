@@ -2770,23 +2770,20 @@ class AgentOrchestrator:
         # Must check this BEFORE loading ds_llm to prevent EVM from evicting router_llm
         use_playground = self._is_playground_applicable(router_llm, prompt)
 
-        # ── Memory Contamination Guard ───────────────────────────────────
-        # When playground verification is active, STRIP past experience from
-        # the prompt. The playground independently verifies correctness, so
-        # past experience is unnecessary. Worse, it can inject stale/imprecise
-        # formulas that the model copies instead of deriving from scratch,
-        # causing the strict playground to fail on repeated identical queries.
         if use_playground and "=== REFERENCE PAST EXPERIENCE ===" in enriched_prompt:
-            # Remove the entire past experience block
+            # Only strip the past experience if it is an unverified best-effort draft.
+            # If it is a verified successful past run, keep it so the model can reuse the correct derivation and code.
             start_marker = "=== REFERENCE PAST EXPERIENCE ==="
             end_marker = "================================="
             start_idx = enriched_prompt.find(start_marker)
             end_idx = enriched_prompt.find(end_marker, start_idx)
             if start_idx != -1 and end_idx != -1:
-                enriched_prompt = (
-                    enriched_prompt[:start_idx].rstrip() + "\n\n" +
-                    enriched_prompt[end_idx + len(end_marker):].lstrip()
-                )
+                past_exp_content = enriched_prompt[start_idx:end_idx]
+                if "[UNVERIFIED" in past_exp_content:
+                    enriched_prompt = (
+                        enriched_prompt[:start_idx].rstrip() + "\n\n" +
+                        enriched_prompt[end_idx + len(end_marker):].lstrip()
+                    )
 
         ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - self.max_tokens, status_callback, router_llm=router_llm)
 
