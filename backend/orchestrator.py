@@ -259,7 +259,16 @@ class AgentOrchestrator:
                 total_vram_gb = total_vram / (1024 ** 3)
                 vram_used_pct = (total_vram - free_vram) / total_vram * 100
                 
-                if vram_used_pct < 95.0:
+                # If EVM hot-swap is active, we know the orchestrator will ruthlessly flush
+                # all other models before loading this one. So we assume 95% of total VRAM
+                # will be safely available, regardless of current occupancy.
+                if getattr(self, 'kaggle_hotswap_mode', False):
+                    five_percent_vram_gb = total_vram_gb * 0.05
+                    surplus_vram = (total_vram_gb * 0.95) - five_percent_vram_gb
+                    if surplus_vram > 0:
+                        vram_allowed_ceiling = int(base_limit + surplus_vram * 8000)
+                        vram_allowed_ceiling = min(32768, vram_allowed_ceiling)
+                elif vram_used_pct < 95.0:
                     five_percent_vram_gb = total_vram_gb * 0.05
                     surplus_vram = free_vram_gb - five_percent_vram_gb
                     if surplus_vram > 0:
