@@ -4,6 +4,7 @@ import re
 import json
 import time
 import psutil
+import threading
 from backend.downloader import get_model_path, is_model_downloaded
 from backend.sandbox import Sandbox
 from backend.memory import Memory
@@ -120,6 +121,7 @@ class AgentOrchestrator:
         self.memory = Memory()
         self.web_search = WebSearch()
         self.loaded_models = {}
+        self.model_lock = threading.Lock()  # Synchronizes model loads across threads
         self.model_access_order = []  # LRU tracker: oldest first
         
         # Dual-GPU Setup Detection
@@ -521,6 +523,22 @@ class AgentOrchestrator:
 
     def _get_model(self, model_key, required_ctx=None):
         """Load a model with Dynamic Memory Allocator protection and dynamic context sizing."""
+        if required_ctx is None:
+            required_ctx = self.context_length if self.context_length > 0 else 8192
+
+        # Fast path: read-cache check without locking to maximize throughput
+        if model_key in self.loaded_models:
+            model_obj = self.loaded_models[model_key]
+            if not (hasattr(model_obj, "n_ctx") and required_ctx > model_obj.n_ctx()):
+                self._touch_model(model_key)
+                return model_obj
+
+        # Synchronize load operations across all TPU worker threads
+        with self.model_lock:
+            return self._load_model_synchronized(model_key, required_ctx)
+
+    def _load_model_synchronized(self, model_key, required_ctx=None):
+        """Internal synchronized loader protecting against concurrent load race conditions."""
         if required_ctx is None:
             required_ctx = self.context_length if self.context_length > 0 else 8192
 
