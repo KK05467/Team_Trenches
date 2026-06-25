@@ -1967,16 +1967,29 @@ class AgentOrchestrator:
                 if not search_query or len(search_query) < 3:
                     search_query = prompt[:80]
 
-                # Calculate dynamic character cap per page based on actual available memory limits
-                char_limit = 6000
+                # Calculate dynamic character cap and page count based on context ceiling
+                ds_ctx_est = self._get_dynamic_context_ceiling("deepseek_r1")
+                
                 is_predictive = any(kw in prompt_lower for kw in ["predict", "forecast", "prediction"])
-                max_results = 20 if is_predictive else 5
-                max_scraped = 20 if is_predictive else 5
                 
                 if is_predictive:
-                    # Keep per-page limits tight (e.g. 2500 chars) for 20 pages to fit within 16k context
-                    char_limit = 2500
+                    if ds_ctx_est >= 32000:
+                        max_results = 20
+                        max_scraped = 20
+                        char_limit = 3500
+                    elif ds_ctx_est >= 16000:
+                        max_results = 15
+                        max_scraped = 15
+                        char_limit = 2500
+                    else:
+                        # 8192 context (Older GPUs like P100/T4)
+                        max_results = 8
+                        max_scraped = 8
+                        char_limit = 2000
                 else:
+                    max_results = 5
+                    max_scraped = 5
+                    char_limit = 6000
                     if torch and torch.cuda.is_available():
                         try:
                             free_vram, total_vram = torch.cuda.mem_get_info(0)
@@ -2358,7 +2371,8 @@ class AgentOrchestrator:
         }.get(req_lang, req_lang)
 
         logic_temp = 0.6
-        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - gen_tokens, status_callback, router_llm=router_llm)
+        # Leave 1000 tokens headroom specifically for the massive 'planner_sys' system prompt
+        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - gen_tokens - 1000, status_callback, router_llm=router_llm)
 
         max_resets = 2
         lessons = ""
@@ -2797,7 +2811,8 @@ class AgentOrchestrator:
         use_playground = self._is_playground_applicable(router_llm, prompt)
 
 
-        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - gen_tokens, status_callback, router_llm=router_llm)
+        # Leave 1000 tokens headroom specifically for the massive 'planner_sys' system prompt
+        ds_safe = self._crunch_prompt(enriched_prompt, "deepseek_r1", ds_ctx - gen_tokens - 1000, status_callback, router_llm=router_llm)
 
         if status_callback:
             mode = "Playground-Verified" if use_playground else "LLM Debate"
