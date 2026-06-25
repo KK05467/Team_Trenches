@@ -1972,14 +1972,26 @@ class AgentOrchestrator:
                 # 1. LLM Query Optimizer
                 router_llm = self._get_model("router", required_ctx=1024)
                 opt_prompt = (
-                    "Extract ONLY the 3-5 most important search keywords from the user request to use in Google. "
-                    "Remove all conversational filler. Output ONLY the raw keywords.\n\n"
+                    "Transform the user request into a concise Google search query. "
+                    "Keep names, locations, cities, and timeframes. Do NOT remove specific locations (like 'Jharsuguda'). "
+                    "Output ONLY the plain search query without quotes, bullet points, numbering, or intro text.\n\n"
                     f"User Request: {prompt}"
                 )
-                raw_query = self._call_model(router_llm, opt_prompt, max_tokens=30, temperature=0.1).strip()
-                # Clean LLM output: take first line only, strip list prefixes and quotes
-                search_query = raw_query.split('\n')[0].strip()
-                search_query = re.sub(r'^(Keywords?:?\s*|\d+\.\s*)', '', search_query, flags=re.IGNORECASE).strip()
+                raw_query = self._call_model(
+                    router_llm, 
+                    opt_prompt, 
+                    max_tokens=30, 
+                    temperature=0.1,
+                    system_prompt="You are a search query optimizer. Output ONLY a clean, single-line Google search query. Never output lists, numbering, or bullet points."
+                ).strip()
+                # Clean LLM output: remove list markers, bullets, and join lines to prevent discarding key information
+                lines = [l.strip() for l in raw_query.split('\n') if l.strip()]
+                cleaned_parts = []
+                for line in lines:
+                    cl = re.sub(r'^(Keywords?:?\s*|Search\s*query:?\s*|\d+[\.\)]\s*|-\s*|\*\s*)', '', line, flags=re.IGNORECASE).strip()
+                    if cl:
+                        cleaned_parts.append(cl)
+                search_query = " ".join(cleaned_parts)
                 search_query = search_query.replace('"', '').replace('`', '').replace('*', '').strip()
                 search_query = search_query[:80]  # Cap length for search engines
                 if not search_query or len(search_query) < 3:
