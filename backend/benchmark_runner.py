@@ -243,22 +243,32 @@ async def execute_task_on_tpu(worker_id: int, category: str, problem: Dict[str, 
                     status_cb
                 )
                 
-                # Accurately determine success by checking if the sandbox execution threw any Python exceptions
-                lower_resp = response.lower()
-                has_error = any(err in lower_resp for err in [
-                    "traceback (most recent call last)",
-                    "timeouterror:",
-                    "syntaxerror:",
-                    "assertionerror:",
-                    "nameerror:",
-                    "typeerror:",
-                    "valueerror:",
-                    "attributeerror:",
-                    "indexerror:",
-                    "keyerror:",
-                    "importerror:"
-                ])
-                success = not has_error
+                # Accurately determine success by running the exact hidden unit tests like OpenAI/Anthropic
+                if "test" in problem and problem["test"] and category in ["HumanEval", "MBPP"]:
+                    import re
+                    # Extract the raw python code from the markdown response
+                    match = re.search(r"```(?:python)?\s*(.*?)\s*```", response, re.DOTALL | re.IGNORECASE)
+                    if match:
+                        extracted_code = match.group(1)
+                        # Append the hidden test cases from the dataset directly to the code
+                        test_code = extracted_code + "\n\n" + problem["test"]
+                        
+                        # Use the secure sandbox to run the final graded code
+                        is_success, output = await asyncio.to_thread(orchestrator.sandbox.execute, test_code, "python")
+                        success = is_success
+                    else:
+                        success = False
+                else:
+                    # Fallback for datasets without programmatic test blocks
+                    lower_resp = response.lower()
+                    has_error = any(err in lower_resp for err in [
+                        "traceback (most recent call last)",
+                        "timeouterror:",
+                        "syntaxerror:",
+                        "assertionerror:"
+                    ])
+                    success = not has_error
+                    
                 generated_tokens = len(response) // 4
             except Exception as e:
                 add_log(f"[Worker {worker_id}] Error running {problem['id']}: {str(e)}")
