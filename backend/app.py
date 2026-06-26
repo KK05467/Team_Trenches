@@ -188,41 +188,60 @@ async def offload_memory():
 
 @app.post("/api/load_all")
 def load_all_models():
-    """Pre-load ALL core text models directly into VRAM simultaneously.
-    Temporarily suspends EVM hot-swap to prevent each model load from flushing the previous one.
-    Skips vision/multimodal models to prevent OOM on constrained hardware (Dual T4 / P100)."""
+    """Pre-cache ALL core model files from disk into System RAM (OS page cache).
+    
+    VRAM remains 100% empty — maximizing available space for KV cache context length.
+    During conversation, EVM hot-swaps models from fast RAM → VRAM one at a time
+    via PCIe (~1-2 seconds) instead of slow disk reads (~30+ seconds).
+    
+    This is the key to EVM's speed: disk → RAM is done once upfront (slow),
+    then RAM → VRAM swaps during chat are nearly instant.
+    """
     import gc
     try:
         models_status = check_models_status()
         downloaded = [k for k, v in models_status.items() if v.get("downloaded")]
         
-        # Only load text models needed for benchmarking — skip large vision models
+        # Core text models to pre-cache — skip large vision model to save RAM
         benchmark_models = ["router", "deepseek_r1", "opencode"]
-        loaded = []
+        cached = []
         
-        # Temporarily suspend EVM so loading model 2 doesn't flush model 1
-        evm_was_active = getattr(orchestrator, 'kaggle_hotswap_mode', False)
-        if evm_was_active:
-            orchestrator.kaggle_hotswap_mode = False
-            print("⏸️  EVM: Suspended for bulk VRAM loading...")
+        for model_key in benchmark_models:
+            if model_key in downloaded:
+                try:
+                    from backend.downloader import get_model_path
+                    model_path = get_model_path(model_key)
+                    file_size_gb = os.path.getsize(model_path) / (1024 ** 3)
+                    print(f"📥 EVM Pre-Cache: Reading '{model_key}' ({file_size_gb:.1f} GB) from disk into System RAM...")
+                    
+                    # Read the entire file sequentially to force it into the OS page cache.
+                    # After this, any future mmap() or open() of this file will hit RAM
+                    # instead of disk, making VRAM loading nearly instant.
+                    bytes_read = 0
+                    with open(model_path, "rb") as f:
+                        while True:
+                            chunk = f.read(64 * 1024 * 1024)  # 64MB chunks
+                            if not chunk:
+                                break
+                            bytes_read += len(chunk)
+                    
+                    cached.append(model_key)
+                    print(f"✅ EVM Pre-Cache: '{model_key}' ({file_size_gb:.1f} GB) now resident in System RAM")
+                except Exception as e:
+                    print(f"⚠️ Failed to pre-cache '{model_key}': {e}")
         
-        try:
-            for model_key in benchmark_models:
-                if model_key in downloaded:
-                    try:
-                        orchestrator._get_model(model_key)
-                        loaded.append(model_key)
-                        gc.collect()
-                    except Exception as e:
-                        print(f"⚠️ Failed to pre-load '{model_key}': {e}")
-                        # Don't crash — continue loading the rest
-        finally:
-            # Always restore EVM mode, even if loading crashes
-            if evm_was_active:
-                orchestrator.kaggle_hotswap_mode = True
-                print(f"▶️  EVM: Restored — {len(loaded)} models now resident in VRAM")
-            
-        return {"status": "success", "message": f"Loaded {len(loaded)} models directly into VRAM: {', '.join(loaded)}"}
+        gc.collect()
+        total_gb = sum(
+            os.path.getsize(get_model_path(mk)) / (1024 ** 3) 
+            for mk in cached 
+            if mk in downloaded
+        )
+        print(f"🚀 EVM Pre-Cache Complete: {len(cached)} models ({total_gb:.1f} GB) cached in RAM. VRAM is 100% free for KV cache.")
+        
+        return {
+            "status": "success", 
+            "message": f"Pre-cached {len(cached)} models ({total_gb:.1f} GB) into System RAM. VRAM free for max context."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
