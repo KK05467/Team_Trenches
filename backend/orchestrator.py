@@ -277,7 +277,9 @@ class AgentOrchestrator:
                 pass
 
         hard_limit = min(ram_allowed_ceiling, vram_allowed_ceiling)
-        hard_limit = max(8192, hard_limit)
+        # Use 2048 as floor instead of 8192 — the old max(8192) was overriding
+        # the P100's VRAM-safe 4096 cap, causing 'token limit exceeded' OOM crashes.
+        hard_limit = max(2048, hard_limit)
         
         # 1. System RAM Constraints (Emergency fallback only to prevent OS crash)
         free_ram = self._get_ram_free_gb()
@@ -2284,12 +2286,13 @@ class AgentOrchestrator:
                 task_type = "CODING"
                 # Prediction tasks with web search produce massive enriched prompts.
                 # Ensure ds_ctx and oc_ctx are large enough to hold the scraped web data.
-                # On Dual T4 (16GB each), we can safely push to 16k context for predictions.
-                prediction_min_ctx = min(16384, ds_ctx_cap)
+                # CRITICAL: On P100 (16GB), ds_ctx_cap is only 4096-8192.
+                # Never exceed the GPU's actual VRAM ceiling to prevent OOM crashes.
+                prediction_min_ctx = min(8192, ds_ctx_cap)
                 if ds_ctx < prediction_min_ctx:
                     ds_ctx = prediction_min_ctx
-                if oc_ctx < prediction_min_ctx:
-                    oc_ctx = prediction_min_ctx
+                if oc_ctx < min(8192, oc_ctx_cap):
+                    oc_ctx = min(8192, oc_ctx_cap)
                 # Recalculate gen_tokens with the expanded context
                 min_ctx = min(ds_ctx, oc_ctx)
                 gen_tokens = int(min_ctx * 0.40)
