@@ -641,13 +641,11 @@ class AgentOrchestrator:
                         del model_obj
                         gc.collect()
                         
-                        # Re-load the swapped-down model on CPU to keep it warm in System RAM
+                        # Re-load the swapped-down model on CPU to keep it warm in System RAM.
+                        # Use a small, conservative context (2048) to minimize RAM footprint while idle.
                         try:
                             cpu_path = get_model_path(mk)
                             cpu_ctx = 2048
-                            if mk == "router": cpu_ctx = 4096
-                            elif mk == "opencode": cpu_ctx = 8192
-                            elif mk == "deepseek_r1": cpu_ctx = 8192
                             
                             # Recursively load to CPU
                             print(f"📥 DMA (EVM Hot-Swap): Re-instantiating '{mk}' on CPU (System RAM)...")
@@ -693,16 +691,20 @@ class AgentOrchestrator:
         # ── GGUF Models (llama_cpp) ──────────────────────────────────────
         if model_path.endswith('.gguf'):
             from llama_cpp import Llama
+            
+            loading_on_cpu = (self.device_mode == "cpu" or force_cpu)
+            
             kwargs = {
                 "model_path": model_path,
                 "n_ctx": required_ctx,
-                "n_gpu_layers": 0 if (self.device_mode == "cpu" or force_cpu) else self.gpu_layers,
+                "n_gpu_layers": 0 if loading_on_cpu else self.gpu_layers,
                 "verbose": False
             }
             # Kaggle Input Speedup
             if "/kaggle/input" in model_path or "kaggle" in model_path.lower():
                 kwargs["use_mmap"] = False
-            # Restrict batch sizes and disable flash attention on older GPUs
+                
+            # Restrict batch sizes and disable flash attention on older GPUs or when running on CPU
             is_older_gpu = False
             if torch and torch.cuda.is_available() and not force_cpu:
                 try:
@@ -711,8 +713,9 @@ class AgentOrchestrator:
                         is_older_gpu = True
                 except Exception:
                     pass
-            if is_older_gpu:
-                print("⚡ DMA: Older GPU detected (Compute Cap < 8.0). Restricting batch size & flash_attn to prevent VRAM crashes.")
+                    
+            if is_older_gpu or loading_on_cpu:
+                print(f"⚡ DMA: {'CPU Mode' if loading_on_cpu else 'Older GPU'} detected. Disabling Flash Attention to prevent context crashes.")
                 kwargs["n_batch"] = 512
                 kwargs["n_ubatch"] = 256
                 kwargs["flash_attn"] = False
@@ -731,6 +734,7 @@ class AgentOrchestrator:
             except Exception as e:
                 print(f"⚠️ DMA: Failed to create llama_context on GPU for '{model_key}' ({e}). Falling back to CPU...")
                 kwargs["n_gpu_layers"] = 0
+                kwargs["flash_attn"] = False  # CRITICAL: Disable flash attention on CPU fallback!
                 kwargs.pop("main_gpu", None)
                 llm = Llama(**kwargs)
 

@@ -211,10 +211,8 @@ def load_all_models():
                     try:
                         print(f"📥 EVM Pre-Load: Instantiating '{model_key}' in System RAM (CPU)...")
                         # Enforce force_cpu=True to load it into CPU RAM
+                        # Use a uniform, safe context (2048) to minimize RAM footprint while warm
                         cpu_ctx = 2048
-                        if model_key == "router": cpu_ctx = 4096
-                        elif model_key == "opencode": cpu_ctx = 8192
-                        elif model_key == "deepseek_r1": cpu_ctx = 8192
                         
                         orchestrator._get_model(model_key, required_ctx=cpu_ctx, force_cpu=True)
                         loaded.append(model_key)
