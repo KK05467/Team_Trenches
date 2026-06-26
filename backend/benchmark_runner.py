@@ -432,6 +432,15 @@ async def run_benchmark_suite(category: str, sample_size: int, orchestrator: Any
         num_workers = 8
         hardware_name = "TPU v5e-8 Host CPU (x8 cores)"
 
+    # Nuclear Option: Proactively unload all models from VRAM to make room for the benchmark!
+    if orchestrator and hasattr(orchestrator, "unload_all_models"):
+        try:
+            add_log("🧹 Pre-benchmark memory flush: Evicting all loaded chat models from VRAM...")
+            orchestrator.unload_all_models()
+            add_log("🧹 Pre-benchmark memory flush complete. VRAM is completely clear!")
+        except Exception as e:
+            add_log(f"⚠️ Pre-benchmark memory flush warning: {e}")
+
     with STATE_LOCK:
         BENCHMARK_STATE["logs"] = []
         BENCHMARK_STATE["workers"] = [{"id": i, "status": "Idle", "task": "N/A", "progress": 0} for i in range(num_workers)]
