@@ -284,7 +284,9 @@ class AgentOrchestrator:
                 try:
                     major, minor = torch.cuda.get_device_capability(0)
                     if major < 8:  # SM 6.0 (P100), SM 7.5 (T4)
-                        vram_allowed_ceiling = min(8192, vram_allowed_ceiling)
+                        # Without Flash Attention, attention memory scales quadratically.
+                        # Cap at 4096 on older GPUs to prevent quadratic VRAM OOM crashes.
+                        vram_allowed_ceiling = min(4096, vram_allowed_ceiling)
                 except Exception:
                     pass
             except Exception:
