@@ -153,7 +153,8 @@ class AgentOrchestrator:
                 
                 # ── Kaggle dGPU Hot-Swap Mode Detection ──
                 # If System RAM is massive (>24GB) but VRAM is restricted (<=16GB)
-                if self.total_ram_gb >= 24 and total_vram_gb <= 16:
+                # and we only have a single GPU (not Dual-GPU setup).
+                if self.total_ram_gb >= 24 and total_vram_gb <= 16 and not self.dual_gpu_pipeline:
                     ram_percent = psutil.virtual_memory().percent
                     is_kaggle = os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None or os.path.exists('/kaggle')
                     # Activate if we are in Kaggle or have enough free memory (RAM usage < 25%)
@@ -435,10 +436,11 @@ class AgentOrchestrator:
                     "opencode": 5.2, "qwen_vl": 6.5}
         return size_map.get(model_key, 5.0)
 
-    def _check_memory_pressure(self, required_vram_gb=None):
+    def _check_memory_pressure(self, required_vram_gb=None, target_gpu_idx=None):
         """LRU-based eviction loop. Evicts models one-by-one until safe.
         
-        If required_vram_gb is provided, evicts until free VRAM >= required_vram_gb + 2 GB buffer.
+        If required_vram_gb is provided, evicts until free VRAM on the target GPU
+        (or all GPUs if target_gpu_idx is None) >= required_vram_gb + 1.5 GB buffer.
         Otherwise falls back to the static safety threshold.
         """
         evicted_any = False
@@ -457,7 +459,8 @@ class AgentOrchestrator:
         # is incompatible and torch.cuda calls can crash the process.
         try:
             if torch and torch.cuda.is_available():
-                for gpu_idx in range(torch.cuda.device_count()):
+                gpus_to_check = [target_gpu_idx] if target_gpu_idx is not None else range(torch.cuda.device_count())
+                for gpu_idx in gpus_to_check:
                     vram_free = self._get_vram_free_gb(gpu_idx)
                     if vram_free is None:
                         continue
@@ -629,7 +632,13 @@ class AgentOrchestrator:
         # Skip memory pressure check if EVM already cleared VRAM — the pressure
         # check runs torch.cuda.synchronize() internally which can crash on P100 (sm_60)
         if not evm_flushed:
-            self._check_memory_pressure(required_vram_gb=est_model_gb)
+            target_gpu = None
+            if self.dual_gpu_pipeline:
+                if model_key in ["deepseek_r1", "opencode"]:
+                    target_gpu = 1
+                else:
+                    target_gpu = 0
+            self._check_memory_pressure(required_vram_gb=est_model_gb, target_gpu_idx=target_gpu)
 
         # ── iGPU Unified Memory Guard ─────────────────────────────────────
         # On Intel Iris Xe (and similar iGPUs), RAM IS VRAM. Loading two 7B
