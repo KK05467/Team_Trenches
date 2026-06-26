@@ -618,18 +618,22 @@ class AgentOrchestrator:
         print(f"📦 DMA: Preparing to load '{model_key}' (~{est_model_gb:.1f} GB)")
         
         # ── EVM Hot-Swap Guard ────────────────────────────────────────────
-        # On constrained GPUs, aggressively swap ALL other active GPU models
-        # down to System RAM (CPU) so the incoming model gets 100% of the VRAM KV Cache space.
+        # On constrained GPUs, completely evict ALL other GPU-resident models
+        # so the incoming model gets 100% of the VRAM for its KV Cache.
+        # We do NOT re-instantiate evicted models on CPU — this caused race conditions
+        # where the CPU re-load consumed RAM while GPU memory hadn't fully freed yet.
+        # Instead, the next _get_model() call will reload from disk (which is fast
+        # because the file is already in the OS page cache from the initial load_all).
         evm_flushed = False
         if getattr(self, 'kaggle_hotswap_mode', False) and not force_cpu and self.loaded_models:
-            models_to_swap_down = [
+            models_to_evict = [
                 mk for mk, m in list(self.loaded_models.items())
-                if mk != model_key and getattr(m, "_n_gpu_layers", 0) > 0
+                if mk != model_key and getattr(m, "_n_gpu_layers", -1) != 0
             ]
-            if models_to_swap_down:
+            if models_to_evict:
                 with self.inference_lock:
-                    for mk in models_to_swap_down:
-                        print(f"🔄 DMA (EVM Hot-Swap): Swapping '{mk}' down from VRAM to System RAM...")
+                    for mk in models_to_evict:
+                        print(f"🔄 DMA (EVM): Evicting '{mk}' from VRAM...")
                         model_obj = self.loaded_models.pop(mk, None)
                         if mk in self.model_access_order:
                             self.model_access_order.remove(mk)
@@ -639,27 +643,15 @@ class AgentOrchestrator:
                             except Exception:
                                 pass
                         del model_obj
-                        gc.collect()
-                        
-                        # Re-load the swapped-down model on CPU to keep it warm in System RAM.
-                        # Use a small, conservative context (2048) to minimize RAM footprint while idle.
-                        try:
-                            cpu_path = get_model_path(mk)
-                            cpu_ctx = 2048
-                            
-                            # Recursively load to CPU
-                            print(f"📥 DMA (EVM Hot-Swap): Re-instantiating '{mk}' on CPU (System RAM)...")
-                            self._load_model_synchronized(mk, required_ctx=cpu_ctx, force_cpu=True)
-                        except Exception as cpu_ex:
-                            print(f"⚠️ DMA (EVM): Failed to swap '{mk}' down to CPU: {cpu_ex}")
-                            
                 gc.collect()
                 try:
                     if torch and torch.cuda.is_available():
                         torch.cuda.empty_cache()
                 except Exception:
                     pass
-                time.sleep(2)
+                # Give llama.cpp's internal cudaFree() time to fully complete
+                time.sleep(3)
+                gc.collect()
                 evm_flushed = True
             else:
                 evm_flushed = True  # Only our model is loaded, all VRAM is ours
@@ -678,7 +670,7 @@ class AgentOrchestrator:
         is_igpu = not (torch and torch.cuda.is_available())
         if is_igpu and self.loaded_models:
             free_ram = self._get_ram_free_gb()
-            if free_ram < self.total_ram_gb * 0.35:  # Less than 35% RAM free
+            if free_ram < self.total_ram_gb * 0.35:
                 print(f"🧠 DMA (iGPU Guard): Pre-emptive eviction — only {free_ram:.1f} GB free")
                 self._evict_lru_model()
 
@@ -704,9 +696,9 @@ class AgentOrchestrator:
             if "/kaggle/input" in model_path or "kaggle" in model_path.lower():
                 kwargs["use_mmap"] = False
                 
-            # Restrict batch sizes and disable flash attention on older GPUs or when running on CPU
+            # Restrict batch sizes and disable flash attention on older GPUs or CPU
             is_older_gpu = False
-            if torch and torch.cuda.is_available() and not force_cpu:
+            if torch and torch.cuda.is_available() and not loading_on_cpu:
                 try:
                     major, _ = torch.cuda.get_device_capability(0)
                     if major < 8:
@@ -715,7 +707,6 @@ class AgentOrchestrator:
                     pass
                     
             if is_older_gpu or loading_on_cpu:
-                print(f"⚡ DMA: {'CPU Mode' if loading_on_cpu else 'Older GPU'} detected. Disabling Flash Attention to prevent context crashes.")
                 kwargs["n_batch"] = 512
                 kwargs["n_ubatch"] = 256
                 kwargs["flash_attn"] = False
@@ -723,27 +714,50 @@ class AgentOrchestrator:
                 kwargs["flash_attn"] = True
 
             # Dual-GPU
-            if self.dual_gpu_pipeline and not force_cpu:
+            if self.dual_gpu_pipeline and not loading_on_cpu:
                 if model_key in ["deepseek_r1", "qwen_vl"]:
                     kwargs["main_gpu"] = 1
                 else:
                     kwargs["main_gpu"] = 0
 
-            try:
-                llm = Llama(**kwargs)
-            except Exception as e:
-                print(f"⚠️ DMA: Failed to create llama_context on GPU for '{model_key}' ({e}). Falling back to CPU...")
-                kwargs["n_gpu_layers"] = 0
-                kwargs["flash_attn"] = False  # CRITICAL: Disable flash attention on CPU fallback!
-                kwargs.pop("main_gpu", None)
+            # Robust GPU load with retry — if the GPU context fails (OOM / race condition),
+            # retry once with a smaller context, then fall back to CPU as last resort.
+            llm = None
+            if not loading_on_cpu:
+                for attempt, ctx_size in enumerate([required_ctx, max(2048, required_ctx // 2)]):
+                    try:
+                        kwargs["n_ctx"] = ctx_size
+                        llm = Llama(**kwargs)
+                        if ctx_size != required_ctx:
+                            print(f"⚠️ DMA: GPU loaded '{model_key}' with reduced context ({ctx_size} instead of {required_ctx})")
+                        break
+                    except Exception as e:
+                        print(f"⚠️ DMA: GPU context creation failed for '{model_key}' (n_ctx={ctx_size}): {e}")
+                        gc.collect()
+                        try:
+                            if torch and torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                
+                # CPU fallback if all GPU attempts failed
+                if llm is None:
+                    print(f"⚠️ DMA: All GPU attempts failed for '{model_key}'. Falling back to CPU...")
+                    kwargs["n_gpu_layers"] = 0
+                    kwargs["n_ctx"] = required_ctx
+                    kwargs["flash_attn"] = False
+                    kwargs.pop("main_gpu", None)
+                    llm = Llama(**kwargs)
+            else:
                 llm = Llama(**kwargs)
 
             # Store actual n_gpu_layers config on the instance
             llm._n_gpu_layers = kwargs["n_gpu_layers"]
             self.loaded_models[model_key] = llm
             self._touch_model(model_key)
-            print(f"✅ Loaded GGUF model '{model_key}' ({os.path.basename(model_path)})" + 
-                  (f" (System RAM/CPU)" if kwargs.get("n_gpu_layers") == 0 else " (GPU VRAM)"))
+            target_label = "System RAM/CPU" if kwargs.get("n_gpu_layers") == 0 else "GPU VRAM"
+            print(f"✅ Loaded GGUF model '{model_key}' ({os.path.basename(model_path)}) ({target_label})")
             return llm
             
         # ── Safetensors / Transformers Models ────────────────────────────
