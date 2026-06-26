@@ -188,16 +188,27 @@ async def offload_memory():
 
 @app.post("/api/load_all")
 def load_all_models():
-    """Pre-load all downloaded models into RAM/page cache for instant startup."""
+    """Pre-load core text models into VRAM for benchmark readiness.
+    Skips vision/multimodal models to prevent OOM on constrained hardware (Dual T4 / P100)."""
+    import gc
     try:
         models_status = check_models_status()
         downloaded = [k for k, v in models_status.items() if v.get("downloaded")]
         
-        # Sequentially load all downloaded models to populate RAM page cache
-        for model_key in downloaded:
-            orchestrator._get_model(model_key)
+        # Only load text models needed for benchmarking — skip large vision models
+        benchmark_models = ["router", "deepseek_r1", "opencode"]
+        loaded = []
+        for model_key in benchmark_models:
+            if model_key in downloaded:
+                try:
+                    orchestrator._get_model(model_key)
+                    loaded.append(model_key)
+                    gc.collect()
+                except Exception as e:
+                    print(f"⚠️ Failed to pre-load '{model_key}': {e}")
+                    # Don't crash — continue loading the rest
             
-        return {"status": "success", "message": "All models successfully loaded into RAM."}
+        return {"status": "success", "message": f"Loaded {len(loaded)} models: {', '.join(loaded)}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
