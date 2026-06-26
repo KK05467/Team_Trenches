@@ -165,7 +165,9 @@ async def fetch_real_dataset(category: str) -> List[Dict[str, Any]]:
             return [{"id": item["instance_id"], "prompt": item["problem_statement"], "repo": item["repo"], "commit": item["base_commit"], "answer": "N/A"} for item in dataset]
             
     except Exception as e:
-        add_log(f"Network / library issue: {str(e)}. Loading built-in high-fidelity dataset.")
+        add_log(f"⚠️ DATASET DOWNLOAD FAILED: {str(e)}")
+        add_log(f"⚠️ WARNING: Falling back to MOCK DATA. Scores will NOT be real!")
+        add_log(f"⚠️ Fix: Run 'pip install datasets' on the VM and restart.")
     
     # Fallback to Mock Data
     return MOCK_PROBLEMS.get(category, [])
@@ -256,6 +258,13 @@ async def execute_task_on_tpu(worker_id: int, category: str, problem: Dict[str, 
                     # Extract all ```python code blocks from the AI's markdown response
                     matches = re.findall(r"```python\s*(.*?)\s*```", response, re.DOTALL | re.IGNORECASE)
                     
+                    # Fallback: If the model wrote raw code without markdown fences,
+                    # try to extract the function definition directly from the response
+                    if not matches and entry_point and f"def {entry_point}" in response:
+                        # Find the function definition and grab everything from it onward
+                        fn_start = response.index(f"def {entry_point}")
+                        matches = [response[fn_start:]]
+                    
                     if matches:
                         # Strategy 1: Find the specific block that defines the entry_point function
                         # This prevents grabbing a "usage example" block instead of the solution
@@ -288,8 +297,16 @@ async def execute_task_on_tpu(worker_id: int, category: str, problem: Dict[str, 
                         # Execute in the secure sandbox and grade on exit code
                         is_success, output = await asyncio.to_thread(orchestrator.sandbox.execute, test_code, "python")
                         success = is_success
+                        
+                        # Log the failure reason for debugging (only on failures)
+                        if not success:
+                            # Extract the last line of the sandbox output as the error reason
+                            error_lines = [l for l in str(output).strip().split('\n') if l.strip()]
+                            fail_reason = error_lines[-1] if error_lines else "Unknown"
+                            add_log(f"[Worker {worker_id}] ❌ {problem['id']} failed: {fail_reason[:120]}")
                     else:
                         success = False
+                        add_log(f"[Worker {worker_id}] ❌ {problem['id']}: No Python code found in response")
                 else:
                     # Fallback for theoretical/math datasets without programmatic test blocks (GPQA, GSM8K, MATH)
                     if "answer" in problem and problem["answer"]:
