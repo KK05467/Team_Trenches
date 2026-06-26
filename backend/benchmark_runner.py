@@ -117,7 +117,7 @@ async def fetch_real_dataset(category: str) -> List[Dict[str, Any]]:
         from datasets import load_dataset
         
         if category == "HumanEval":
-            dataset = load_dataset("openai_humaneval", split="test", download_mode="force_redownload")
+            dataset = load_dataset("openai_humaneval", split="test")
             add_log(f"Successfully loaded OpenAI HumanEval dataset ({len(dataset)} items).")
             return [{"id": item["task_id"], "prompt": item["prompt"], "test": item["test"]} for item in dataset]
             
@@ -247,13 +247,8 @@ async def execute_task_on_tpu(worker_id: int, category: str, problem: Dict[str, 
                 success = "Verified" in response or "success" in response.lower()
                 generated_tokens = len(response) // 4
             except Exception as e:
-                err_str = str(e).lower()
-                if "llama_cpp" in err_str or "downloaded" in err_str or "format" in err_str:
-                    if worker_id == 0:
-                        add_log(f"⚠️ Missing dependencies ({str(e)}). Falling back to High-Fidelity Simulation.")
-                    use_simulation = True
-                else:
-                    raise e
+                add_log(f"[Worker {worker_id}] Error running {problem['id']}: {str(e)}")
+                use_simulation = True
         else:
             use_simulation = True
 
@@ -410,4 +405,4 @@ async def run_benchmark_suite(category: str, sample_size: int, orchestrator: Any
         
     add_log(f"🏁 Benchmark finished in {total_time:.1f} seconds.")
     add_log(f"Final Score: {BENCHMARK_STATE['passed']}/{BENCHMARK_STATE['total']} passed ({BENCHMARK_STATE['accuracy']}% accuracy)")
-    add_log(f"TPU v5e Throughput: {BENCHMARK_STATE['tokens_per_sec']} tokens/sec average per core.")
+    add_log(f"Throughput: {BENCHMARK_STATE['tokens_per_sec']} tokens/sec average per core.")

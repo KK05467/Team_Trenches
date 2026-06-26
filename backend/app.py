@@ -367,12 +367,27 @@ def get_benchmark_status():
 
 @app.post("/api/benchmark/start")
 def start_benchmark_suite(req: BenchmarkStartRequest, background_tasks: BackgroundTasks):
-    """Start the parallel TPU v5e-8 benchmark evaluation in the background."""
+    """Start the parallel benchmark evaluation in the background."""
     with STATE_LOCK:
         if BENCHMARK_STATE["active"]:
             return {"status": "already_running"}
     
-    background_tasks.add_task(run_benchmark_suite, req.category, req.sample_size, orchestrator)
+    # run_benchmark_suite is async — we must bridge it into a sync wrapper
+    # for FastAPI's BackgroundTasks, which runs tasks in a plain thread.
+    def _run_sync():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(run_benchmark_suite(req.category, req.sample_size, orchestrator))
+            loop.close()
+        except Exception as e:
+            import traceback
+            print(f"❌ Benchmark runner crashed: {traceback.format_exc()}")
+            with STATE_LOCK:
+                BENCHMARK_STATE["active"] = False
+                BENCHMARK_STATE["logs"].append(f"[ERROR] Benchmark crashed: {str(e)}")
+    
+    background_tasks.add_task(_run_sync)
     return {"status": "started"}
 
 @app.post("/api/benchmark/stop")
