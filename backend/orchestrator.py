@@ -541,9 +541,12 @@ class AgentOrchestrator:
         # To completely prevent this, we enforce that on GPUs, the model is ALWAYS loaded with
         # its maximum safe context ceiling (ceiling) right from the start. This ensures the model
         # is loaded exactly once at its full capacity and NEVER has to be unloaded/reloaded to expand.
-        if torch and torch.cuda.is_available() and not force_cpu:
+        is_cpu = (self.device_mode == "cpu" or force_cpu)
+        if not is_cpu:
             ceiling = self._get_dynamic_context_ceiling(model_key)
             required_ctx = ceiling
+        else:
+            required_ctx = max(8192, required_ctx)
 
         # Check if already loaded
         if model_key in self.loaded_models:
