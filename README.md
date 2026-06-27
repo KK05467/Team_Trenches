@@ -28,14 +28,14 @@ The system auto-detects your hardware at startup and dynamically scales **contex
 
 ## ✨ What Makes This Different
 
-Most "local AI" projects run a single model and call it agentic. DeepThinker runs an **orchestrated pipeline of 4 specialized models** with a loop-based Actor-Critic architecture, a live polyglot code execution sandbox, real-time web search with deep scraping, and a 3D visualization engine — all adapting to your hardware.
+Most "local AI" projects run a single model and call it agentic. DeepThinker runs an **orchestrated pipeline of 5 specialized models** with a loop-based Actor-Critic architecture, a live polyglot code execution sandbox, real-time web search with deep scraping, and a 3D visualization engine — all adapting to your hardware.
 
 | Feature | DeepThinker | Typical Local LLM App |
 |---|---|---|
-| Number of models | 4 (dynamically routed) | 1 |
+| Number of models | 5 (dynamically routed V2) | 1 |
 | Code execution | ✅ Isolated polyglot sandbox (9 languages) | ❌ |
 | Self-correction | ✅ Reflexion + Nuclear Reset loops | ❌ |
-| Web search | ✅ Deep scraping with deduplication | ❌ or cloud API |
+| Web search | ✅ 4 modes: Off, Simple, Prediction, Extreme | ❌ or cloud API |
 | UI Artifacts | ✅ Claude-style Frontend Sandboxing | ❌ |
 | Memory / RAG | ✅ ChromaDB + SQLite vector store | ❌ |
 | 3D Visualization | ✅ Three.js / Plotly.js auto-generation | ❌ |
@@ -44,58 +44,51 @@ Most "local AI" projects run a single model and call it agentic. DeepThinker run
 
 ---
 
-## 🤖 The Agent Pipeline
+## 🤖 The Agent Pipeline (6-Way Architecture)
 
 ```
-User Prompt
-    │
-    ▼
-┌─────────────────────────────────┐
-│  Phi-3.5-Mini (Master Router)  │  ← Classifies: SIMPLE / CODING / REASONING
-└───────────────┬─────────────────┘
-                │
-    ┌───────────┼──────────────────────────────┐
-    ▼           ▼                              ▼
- SIMPLE      CODING                        REASONING
-    │           │                              │
-    │           ▼                              ▼
-    │     DeepSeek-R1 (Logic Plan)       DeepSeek-R1 (Draft Answer)
-    │           │                              │
-    │           ▼                              ▼
-    │     Reasoning Sandbox             Reasoning Playground
-    │       (Logic Check)                 (Python Asserts Check)
-    │           │                              │
-    │           ├─► Fail: Correction           ├─► Fail: DeepSeek-R1
-    │           │   Loop                       │   (Correction Loop ×3)
-    │           ▼                              ▼
-    │     DeepSeek-R1 (Write Code)       3D Gate Check
-    │           │                              │
-    │           ▼                              ▼
-    │     Execution Sandbox (Polyglot)  OpenCodeInterpreter
-    │           │                       (Three.js/Plotly.js Visual)
-    │           ├─► Fail: Reflexion
-    │           │   Loop ×3
-    │           │
-    │           ├─► Critical Fail:
-    │           │   Nuclear Reset +
-    │           │   Emergency Web Search
-    │           ▼
-    └───────────┴──────────────────────────────┘
-                       │
-                       ▼
-               Streamed Response
-           (Answer + Code + 3D Visual)
+                       User Prompt + Uploaded Image
+                                    │
+                                    ▼
+                      ┌───────────────────────────┐
+                      │ Qwen-2.5-VL Vision Parser │ (Extract text/diagrams)
+                      └─────────────┬─────────────┘
+                                    │
+                                    ▼
+                      ┌───────────────────────────┐
+                      │    Phi-3.5-Mini Router    │ (Intent & Mode Classifier)
+                      └─────────────┬─────────────┘
+                                    │
+    ┌───────────────┬───────────────┼───────────────┬────────────────┬──────────────┐
+    ▼               ▼               ▼               ▼                ▼              ▼
+  [PATH A]       [PATH B]        [PATH C]        [PATH D]         [PATH E]       [PATH F]
+   SIMPLE         CODING        REASONING       PREDICTION      EXTREME SEARCH    3D VIZ
+    │               │               │               │                │              │
+    ▼               ▼               ▼               ▼                ▼              ▼
+Phi-3.5-Mini   OpenCodeDS      VibeThinker 3B  OpenCodeDS       DeepSeek R1    OpenCodeDS
+ Direct Ans    Actor-Critic     Reasoning Plan  ML Regression   Deep Analysis   WebGL & JS
+    │               │               │               │                │              │
+    ▼               ▼               ▼               ▼                ▼              ▼
+Web Search    Execution       Sandbox         Data Cleaning    OpenCodeDS     Reflexion
+ (Simple)     Sandbox         Verification     Loop (SciPy)    Plotly Charts  Sandbox Loop
+    │               │               │               │                │              │
+    └───────────────┴───────────────┴───────────────┴────────────────┴──────────────┘
+                                    │
+                                    ▼
+                             Streamed Response
+                         (Answer + Code + 3D Visual)
 ```
 
 ---
 
-## 🧩 The Four Agents
+## 🧩 The Five Agents
 
 | Agent | Model | Role | VRAM |
 |---|---|---|---|
 | **Master Router** | Phi-3.5-Mini-Instruct Q6_K | Intent classification, search query optimization, prompt compression, 3D gate checks | ~2.8 GB |
+| **Math/Logic Reasoning** | WeiboAI VibeThinker 3B Q6_K | Curricular reinforcement learning-trained reasoning engine for mathematics, physics & logic | ~2.5 GB |
 | **Reasoning Engine** | DeepSeek-R1-Distill-Qwen-7B Q6_K | Chain-of-thought logic, math proofs, code writing, deep analysis, Actor-Critic debate | ~6.0 GB |
-| **3D Visualization** | OpenCodeInterpreter-DS-6.7B Q6_K | Plotly 3D charts, Three.js simulations, interactive HTML artifact generation | ~5.0 GB |
+| **3D Visualization** | OpenCodeInterpreter-DS-6.7B Q6_K | Plotly 3D charts, Three.js simulations, interactive HTML artifact generation, ML scripting | ~5.0 GB |
 | **Vision Parser** | Qwen2.5-VL-7B-Instruct Q6_K_XL | Multimodal image/document OCR, circuit diagrams, handwritten equations | ~7.0 GB |
 
 All models are loaded on-demand (lazy loading) and managed by the Dynamic Memory Allocator. Only one model occupies VRAM at a time in EVM mode.
@@ -193,109 +186,11 @@ Real-time web search with deep scraping and intelligent deduplication:
 
 **Search Provider Chain:** Google Custom Search API → SearXNG (4 instance fallback) → DuckDuckGo Library → DuckDuckGo HTML Scraper
 
-**Deep Scraping Pipeline:**
-- **LLM Query Optimizer:** Phi-3.5-Mini transforms the user prompt into a concise search query, preserving locations, names, and timeframes
-- **Context-Aware Scraping:** Char limits per page scale dynamically with the GPU context ceiling (not raw VRAM), preventing oversized payloads
-- **Jaccard Deduplication:** Computes word-level Jaccard similarity between scraped pages — any page with >65% overlap against previously collected content is skipped
-- **Cloudflare/Bot Detection:** Automatically skips pages with captcha, access denied, or DDoS protection markers
-
-**Predictive Scraping Mode:** For queries containing "predict", "forecast", or "prediction", the system expands to 8-20 pages with targeted character limits to harvest dense datasets for statistical analysis.
-
-### 8 — Semantic Prompt Cruncher
-
-Prevents context window crashes when prompts exceed the model's capacity:
-
-- **Tokenizer-Precise Estimation:** Uses the loaded model's actual tokenizer for exact token counts (not char/3 approximation)
-- **Smart Budget Allocation:** Splits the prompt into 25% top, 55% bottom, and 20% middle summary — preserving the user's question and the most recent context
-- **Context-Safe Summarization:** Dynamically truncates the middle chunk to fit inside the router model's context window (with 300 token overhead for chat template markers) before summarization
-- **Overflow-Safe Routing:** All internal summarization calls go through `_call_model` which has built-in overflow protection
-- **Post-Crunch Verification:** After summarization, the final crunched output is verified against the budget; if still over, a hard-truncate preserves head and tail
-- **Model-Aware Generation Sizing:** Allocates up to 40% of context for generation (capped 2048-8192), with a minimum 1500-token prompt headroom guarantee
-
-### 9 — Claude-Style UI Artifacts & 3D Visualization
-
-After every `CODING` or `REASONING` response, a **3D Gate Check** runs automatically:
-
-- The Router decides if the task involves mathematical graphing, physics equations, data plots, or molecular structures
-- If yes, **OpenCodeInterpreter** generates a self-contained **HTML/JS Artifact** using Three.js or Plotly.js:
-  - **Physics:** Orbits, trajectories, barycenter markers, gravity vectors
-  - **Biology/Chemistry:** DNA double-helices, membrane channels, molecular compounds
-  - **Interactive Controls:** Glassmorphic sliders to tweak physical settings in real-time
-- Rendered inside a **secure, isolated iframe sandbox** — exactly like Anthropic's Claude Artifacts
-- **Real-time Console Overlay:** Captures `console.log`, `console.warn`, `console.error` from the iframe for instant debugging
-- **Dual-Mode Fallback:** If HTML generation fails, falls back to Python Plotly executor
-
-### 10 — Vision / Multimodal Input
-
-Upload any image alongside a prompt for multimodal analysis:
-- **Qwen2.5-VL 7B** parses images and extracts text, diagrams, and logic
-- Extracted content is prepended to the prompt and passed through the full pipeline
-- Works with circuit diagrams, handwritten equations, screenshots, charts, and documents
-
-### 11 — Live Streaming Agent Timeline
-
-The React UI streams the pipeline status in real-time:
-- Each agent step shows a status badge: `info` / `warning` / `success` / `error`
-- Progress bar advances through pipeline stages
-- Logs collapse into a clean accordion once the final response arrives
-- **Cancel button** stops generation mid-stream while keeping models loaded for instant reuse
-- **Offload Memory** button unloads all models from RAM/VRAM on demand
-
----
-
-## 🖥️ Hardware Compatibility
-
-| Hardware | Status | Notes |
-|---|---|---|
-| **Intel Iris Xe iGPU** | ✅ Full support | Uses system RAM as VRAM via Level Zero API |
-| **Intel Arc dGPU** | ✅ Full support | Same SYCL/Level Zero path |
-| **NVIDIA (CUDA)** | ✅ Full support | cuBLAS acceleration via llama.cpp, auto-scales by compute capability |
-| **AMD (ROCm)** | ✅ Full support | ROCm path via PyTorch + llama.cpp |
-| **Apple Silicon (M1-M4)** | ✅ Full support | Metal backend |
-| **CPU only** | ✅ Works | Slow but functional (switch to `device_mode: cpu` in settings) |
-
-### Intel Iris Xe — Special Notes
-
-Running 7B+ models on iGPUs is notoriously unstable. These fixes are baked into the codebase:
-
-- **Error 45 (`UR_RESULT_ERROR_INVALID_ARGUMENT`):** Fixed via `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1` in `app.py`
-- **`corrupted size vs. prev_size` heap crash:** Fixed via the DMA iGPU Guard preventing simultaneous large allocations
-- **Float16 kernel failures:** Models fall back to `float32` on XPU with IPEX optimization applied automatically
-
-### NVIDIA Older GPUs (P100/T4/V100) — Special Notes
-
-On SM < 8.0 GPUs that lack hardware Flash Attention:
-
-- **Batch size restriction:** `n_batch=512`, `n_ubatch=256` to prevent quadratic VRAM scratch buffer spikes
-- **Flash attention disabled:** `flash_attn=False` to avoid buggy fallback code paths
-- **Context ceiling capped:** Maximum 8,192 tokens to prevent CUDA OOM during prompt evaluation
-
----
-
-## 🧠 System Requirements
-
-| Component | Minimum | Recommended |
-|---|---|---|
-| **RAM** | 16 GB | 32 GB |
-| **GPU VRAM** | 8 GB (NVIDIA/AMD dGPU) | 16 GB+ |
-| **Storage** | 25 GB free | 40 GB free |
-| **OS** | Ubuntu 22.04 / Win 10 / macOS 13 | Ubuntu 24.04 / Win 11 / macOS 14 |
-| **Python** | 3.10 | 3.12 |
-| **Node.js** | 18 | 20 |
-
-> **Intel iGPU (Iris Xe / Arc):** Uses system RAM as VRAM via the Level Zero API. Works with **16 GB RAM** minimum (using aggressive LRU model swapping), but 32 GB is recommended. Always export `SYCL_DEVICE_FILTER=level_zero` before starting the backend.
-
----
-
-## 🏆 Agentic Evaluation Framework
-
-Included in this repository is our custom-built, enterprise-grade benchmarking infrastructure. Rather than relying on third-party black-box evaluators, we engineered a native testing harness to rigorously validate our multi-agent pipeline against world-class datasets (like SWE-bench Lite, MMLU-Pro, and GSM8K).
-
-* **`backend/benchmark_runner.py`:** A highly concurrent, multi-worker evaluation engine. It handles dataset fetching (HuggingFace datasets), distributes workload across the GPU, simulates parallel matrix generation, and manages explicit routing to the reasoning/coding pipelines.
-* **`backend/repo_map.py`:** The RAG AST Isolation Scorer. When tackling massive codebases (like Django or Astropy in SWE-bench), it prevents context window blowouts by scanning thousands of files and isolating only the exact structural signatures needed for the specific bug.
-* **`frontend/benchmark.html`:** A dedicated dashboard to monitor the parallel workers, track token generation speeds, and visualize real-time evaluation scores.
-
-**Current Validation:** This infrastructure was used to officially validate our architecture, achieving an elite **80%+ accuracy on both SearchQA and SWE-bench Lite** using local models.
+**Search Modes:**
+*   **Off:** Direct response generation.
+*   **🌐 Search (Simple):** Scrapes 3-5 pages with precise query optimization.
+*   **🔮 Predict (Prediction):** Decoupled ML-data pipeline scraping up to 20 sources, extracting dataset columns, handling NaNs, dates, and computing regression metrics via scikit-learn in the sandbox.
+*   **🔬 Extreme (Extreme WebSearch):** Ingests massive data chunks and routes to DeepSeek R1-7B for comparative analysis before OpenCodeInterpreter builds Plotly visualizations.
 
 ---
 
@@ -313,13 +208,14 @@ Team_Trenches/
 ├── frontend/
 │   └── src/
 │       └── App.jsx       # React UI: live streaming, 3D artifacts, glassmorphic design
-├── models/               # Downloaded GGUF weights (git-ignored, ~18 GB total)
+├── models/               # Downloaded GGUF weights (git-ignored, ~20.5 GB total)
 │   ├── text/
 │   │   ├── router/       # Phi-3.5-Mini-Instruct Q6_K (~2.8 GB)
+│   │   ├── vibethinker/  # WeiboAI VibeThinker 3B Q6_K (~2.5 GB)
 │   │   ├── deepseek_r1/  # DeepSeek-R1-Distill-Qwen-7B Q6_K (~6.0 GB)
 │   │   └── opencode/     # OpenCodeInterpreter-DS-6.7B Q6_K (~5.0 GB)
 │   └── image_to_text/
-│       └── qwen_vl/      # Qwen2.5-VL-7B-Instruct Q6_K_XL (~7.0 GB)
+│       └── qwen_vl/      # Qwen2.5-VL-7B-Instruct Q6_K_XL + mmproj (~8.3 GB)
 ├── start.sh              # One-command Linux launcher (backend + frontend)
 ├── STARTUP.md            # Cross-platform startup guide
 ├── README_SETUP.md       # Hardware acceleration installation guide
@@ -338,87 +234,20 @@ Team_Trenches/
 | `/api/cancel` | `POST` | Stop active generation (models stay loaded in memory) |
 | `/api/offload` | `POST` | Unload all models from RAM/VRAM |
 | `/api/load_all` | `POST` | Pre-load all downloaded models into RAM page cache (EVM only) |
-| `/api/settings` | `POST` | Update context length, temperature, GPU layers, web search toggle |
+| `/api/settings` | `POST` | Update context length, temperature, GPU layers, web search mode |
 | `/api/memory/count` | `GET` | Number of stored long-term memories |
 | `/api/memory/clear` | `POST` | Reset the vector database and memory store |
 | `/api/unload` | `POST` | Unload all models to free system RAM |
 
 ---
 
-## 🧪 Example Prompts to Try
+## 🆕 Pipeline V2 Optimizations (June 2026)
 
-**Weather & Real-Time Data:**
-> *How is the weather in Jharsuguda today?*
-
-**3D Physics Simulation:**
-> *Simulate the orbital mechanics of a binary star system. Give me the mathematical explanation, and then generate an interactive 3D visualization showing the orbital paths.*
-
-**Live Prediction Playground:**
-> *Perform a predictive analysis on the global adoption of renewable energy over the next 5 years. Based on historical growth rates, forecast the percentage share of renewables by 2030.*
-
-**Deep Reasoning + Verification:**
-> *Prove that the sum of the first N natural numbers is N(N+1)/2. Verify it computationally for N=100.*
-
-**Reflexion Loop Test:**
-> *Write a Python implementation of a Red-Black Tree with insert, delete, and search operations. Include test cases.*
-
-**Vision + Coding (upload an image):**
-> *Analyze this circuit diagram and write the Python simulation for it.*
-
----
-
-## 🆕 Pipeline Optimizations (June 2026)
-
-<details>
-<summary><strong>Click to expand full optimization changelog</strong></summary>
-
-- **GPU-Aware Dynamic Context Scaling:** Context windows, batch sizes, scraping depths, and generation budgets all auto-scale based on detected GPU compute capability (SM 6.0 → SM 9.0+)
-- **Token Overflow Prevention (4-Bug Fix):** Comprehensive audit fixing char_limit ignoring context ceiling, Semantic Cruncher bypassing overflow protection, chat template overhead underestimation, and post-crunch output verification
-- **Context-Derived Scraping:** Web scrape char_limits now derive from `ds_ctx_est × 0.60 × 3 / pages` instead of raw VRAM/RAM, preventing oversized payloads
-- **LLM Search Query Optimizer:** Transforms user prompts into concise Google queries while preserving locations, names, and timeframes — prevents city/location details from being discarded
-- **Older GPU Batch Restriction:** On SM < 8.0 GPUs, restricts `n_batch=512`, `n_ubatch=256`, and disables `flash_attn` to prevent quadratic VRAM scratch buffer crashes
-- **EVM Warm-Up Preloading:** Background page-cache warming via `/api/load_all` for 1-2 second hot-swaps
-- **RAG Memory Contamination Fix:** Prioritizes successful solutions over intermediate mistake logs
-- **Deterministic Playground Verification:** Test scripts routed to Phi-3.5-Mini instead of verbose DeepSeek-R1
-- **Emergency Search Verification:** Post emergency web search, runs 1 round of sandbox verification with correction
-- **RAG Variable Prioritization:** Forces models to use past memories only for algorithmic structure, not numerical values
-- **Aligned Coding & Reasoning Loops:** Identical nested retry structure (2 outer resets, 2 inner drafts per reset)
-- **Multi-Tiered Intent Classification:** 4-stage classifier: structural patterns → domain overrides → few-shot prompting → fallback scans
-- **Auto-pip Package Installer:** Detects `ModuleNotFoundError`, pip-installs on the fly, and re-executes
-- **Memory Contamination Guard:** Strips past experience during playground verification for first-principles derivation
-
-</details>
-
----
-
-## 📦 Setup & Installation
-
-See the dedicated guides:
-
-| Guide | What it covers |
-|---|---|
-| **[README_SETUP.md](./README_SETUP.md)** | System prerequisites, Python deps, GPU acceleration (Mac/NVIDIA/Intel) |
-| **[STARTUP.md](./STARTUP.md)** | Downloading models, starting the backend and frontend, troubleshooting |
-
-**Quick Start (Linux):**
-```bash
-# 1. Clone the repository
-git clone https://github.com/Bshdhorrhh/Team_Trenches.git
-cd Team_Trenches
-
-# 2. Create virtual environment and install dependencies
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# 3. Install frontend dependencies
-cd frontend && npm install && cd ..
-
-# 4. Launch everything
-./start.sh
-```
-
-The web UI will be available at `http://localhost:5173`. Models download automatically on first use.
+- **VibeThinker 3B Integration:** WeiboAI's reasoning-focused model registered as the dedicated engine for competitive math and STEM logic.
+- **Tri-State Web Search Mode Selector:** Replacing the binary switch with Off / Search / Predict / Extreme modes in both frontend and backend.
+- **Dedicated ML Prediction Pipeline:** Python Scikit-Learn validation loops with NaN correction, date parsers, and custom `PREDICTIVE_METRICS` outputs.
+- **Extreme WebSearch Pipeline:** Direct ingestion of up to 20 web documents with DeepSeek R1 reasoning followed by automated Plotly chart generation.
+- **Full Qwen-2.5-VL 7B Multimodal Pipeline:** Verified vision OCR transcribing handwritten text, circuit diagrams, and math formulas directly into the query context.
 
 ---
 
