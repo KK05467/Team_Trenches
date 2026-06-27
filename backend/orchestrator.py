@@ -115,7 +115,7 @@ class AgentOrchestrator:
         self.temperature = 0.7
         self.device_mode = "gpu"
         self.gpu_layers = -1
-        self.enable_web_search = False
+        self.search_mode = "off"  # off, simple, prediction, extreme
         
         self.sandbox = Sandbox(timeout=300)
         self.memory = Memory()
@@ -2125,6 +2125,184 @@ class AgentOrchestrator:
         return f"\n\n### 3D Visualization Script\n{formatted_code}{error_msg}"
 
     # =========================================================================
+    # PREDICTION PIPELINE — Dedicated ML/Data Science Forecasting
+    # =========================================================================
+    def _prediction_pipeline(self, prompt, enriched_prompt, router_llm,
+                              router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback=None):
+        """Dedicated prediction pipeline with specialized ML prompts and data cleaning loops."""
+        if status_callback:
+            status_callback("🔮 Prediction: Drafting ML regression script...", "info", "opencode", 20)
+
+        coder_llm = self._get_model("opencode", required_ctx=oc_ctx)
+        
+        ml_system_prompt = (
+            "You are an expert Python data scientist. Write production-grade ML scripts using pandas, "
+            "scikit-learn, numpy, and scipy. Handle missing data (NaN), parse dates, and use robust "
+            "regression methods. Always validate your data before fitting models.\n"
+            "CRITICAL OUTPUT FORMAT: At the end of the script, print a JSON block with this exact format:\n"
+            'print("PREDICTIVE_METRICS:" + json.dumps({"metric_name": "R²", "metric_value": r2_score, '
+            '"forecast": [list_of_predictions], "dates": [list_of_labels]}))\n'
+            "Output ONLY the complete script in ```python``` blocks."
+        )
+
+        ml_prompt = (
+            f"Write a complete Python script that performs predictive analysis/forecasting on the following data.\n\n"
+            f"RULES:\n"
+            f"1. Import pandas, numpy, sklearn, json. Parse any tabular data from the context below.\n"
+            f"2. Handle missing values with dropna() or fillna(). Convert date strings to datetime.\n"
+            f"3. Use LinearRegression, Ridge, or RandomForestRegressor from sklearn.\n"
+            f"4. Split data 80/20 for train/test. Compute R² score.\n"
+            f"5. Generate future predictions (5-10 steps ahead).\n"
+            f"6. Print PREDICTIVE_METRICS JSON at the end (see system prompt format).\n"
+            f"7. Do NOT use matplotlib, plotly, or any visualization. Only compute and print.\n"
+            f"8. If data is insufficient, create synthetic sample data based on the topic.\n\n"
+            f"Context & Data:\n{enriched_prompt[:6000]}\n\n"
+            f"Output the complete script in ```python``` blocks."
+        )
+
+        code = Sandbox.extract_code(self._strip_thinking(
+            self._call_model(coder_llm, ml_prompt, gen_tokens, gen_temp, system_prompt=ml_system_prompt)
+        ))
+
+        if not code or len(code.strip()) < 50:
+            return f"### Prediction Pipeline\nFailed to generate a valid ML script for: {prompt[:200]}"
+
+        # Execute and verify
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            if status_callback:
+                status_callback(f"🔮 Executing prediction script (Attempt {attempt+1}/{max_attempts})...", "info", "opencode", 40 + attempt * 20)
+            
+            ok, output = self.sandbox.execute(code, language='python')
+            
+            if ok and "PREDICTIVE_METRICS:" in output:
+                if status_callback:
+                    status_callback("🔮 Prediction VERIFIED!", "success", "opencode", 100)
+                self.memory.save(prompt, code)
+                
+                # Extract the metrics JSON
+                metrics_line = ""
+                for line in output.split('\n'):
+                    if "PREDICTIVE_METRICS:" in line:
+                        metrics_line = line.split("PREDICTIVE_METRICS:", 1)[1].strip()
+                        break
+                
+                result = f"### Prediction & Forecasting Analysis\n\n"
+                if metrics_line:
+                    result += f"<!--PREDICTIVE_METRICS_JSON-->\n{metrics_line}\n<!--/PREDICTIVE_METRICS_JSON-->\n\n"
+                result += f"```python\n{code}\n```\n"
+                return result
+            
+            # Data cleaning loop — fix errors
+            if status_callback:
+                status_callback(f"🔮 Fixing data/script error (Round {attempt+1})...", "warning", "opencode", 50 + attempt * 15)
+            
+            error_details = output[:800] if output else "Script produced no output."
+            fix_prompt = (
+                f"The prediction script failed with this error:\n{error_details}\n\n"
+                f"Original code:\n{code[:2000]}\n\n"
+                f"Fix the script. Common issues:\n"
+                f"1. NaN values — use dropna() or fillna(0)\n"
+                f"2. Empty DataFrame — create synthetic sample data\n"
+                f"3. Date parsing — use pd.to_datetime(errors='coerce')\n"
+                f"4. Shape mismatch — ensure X and y have matching rows\n"
+                f"Output ONLY the corrected script in ```python``` blocks."
+            )
+            code = Sandbox.extract_code(self._strip_thinking(
+                self._call_model(coder_llm, fix_prompt, gen_tokens, gen_temp, system_prompt=ml_system_prompt)
+            ))
+
+        # Fallback
+        return f"### Prediction Pipeline (Best-Effort)\n\n**Execution failed after {max_attempts} attempts.**\n\n```python\n{code}\n```\n\n**Last Error:**\n```\n{output[:500]}\n```"
+
+    # =========================================================================
+    # EXTREME WEBSEARCH PIPELINE — Deep Analysis + Chart Generation
+    # =========================================================================
+    def _extreme_websearch_pipeline(self, prompt, enriched_prompt, router_llm,
+                                     router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback=None):
+        """Deep document analysis using DeepSeek R1 + chart generation using OpenCodeInterpreter."""
+        # Phase 1: DeepSeek R1 analyzes the scraped web data
+        if status_callback:
+            status_callback("🔬 DeepSeek R1: Analyzing documents & structuring data...", "info", "deepseek_r1", 20)
+
+        ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+        
+        analysis_prompt = (
+            f"You are a senior research analyst. Analyze the following web data thoroughly.\n\n"
+            f"TASK:\n"
+            f"1. Compare all data sources and identify key metrics, statistics, and trends.\n"
+            f"2. Structure your findings into a clear, data-driven report with sections.\n"
+            f"3. Extract numerical data that can be visualized (percentages, counts, rankings).\n"
+            f"4. At the END of your report, output a JSON block with chart-ready data:\n"
+            f'```json\n{{"charts": [{{"type": "pie|bar|line", "title": "...", "labels": [...], "values": [...]}}]}}\n```\n\n'
+            f"User Question: {prompt}\n\n"
+            f"Web Data:\n{enriched_prompt[:8000]}"
+        )
+
+        analysis = self._strip_thinking(
+            self._call_model(ds_llm, analysis_prompt, gen_tokens, 0.6,
+                           system_prompt="You are a world-class research analyst. Provide comprehensive, data-driven analysis.")
+        )
+
+        if status_callback:
+            status_callback("🔬 Analysis complete. Generating interactive charts...", "info", "opencode", 60)
+
+        # Phase 2: OpenCodeInterpreter generates Plotly charts from the analysis
+        coder_llm = self._get_model("opencode", required_ctx=oc_ctx)
+        
+        chart_prompt = (
+            f"Based on this analysis report, write a Python script that creates interactive Plotly charts.\n\n"
+            f"RULES:\n"
+            f"1. Import plotly.graph_objects as go, numpy as np, json\n"
+            f"2. Create pie charts, bar charts, or line charts based on the data in the report.\n"
+            f"3. Use template='plotly_dark' and glassmorphic styling.\n"
+            f"4. If the report contains a JSON chart data block, parse and use it directly.\n"
+            f"5. If no JSON block exists, extract numbers from the text and create appropriate charts.\n"
+            f"6. Last line MUST be: print(fig.to_json())\n"
+            f"7. Do NOT use fig.show() or save to file.\n\n"
+            f"Analysis Report:\n{analysis[:4000]}\n\n"
+            f"Output ONLY the script in ```python``` blocks."
+        )
+
+        chart_code = Sandbox.extract_code(self._strip_thinking(
+            self._call_model(coder_llm, chart_prompt, gen_tokens, gen_temp,
+                           system_prompt="You are an expert Python Plotly coder. Output ONLY valid Python code.")
+        ))
+
+        chart_json = ""
+        if chart_code:
+            ok, chart_output = self.sandbox.execute(chart_code, language='python')
+            if ok and "{" in chart_output:
+                # Extract JSON from output
+                cleaned = chart_output.strip()
+                for prefix in ["🔒 [Restricted Sandbox]\n", "🔒 [Restricted Sandbox]",
+                               "⚠️ [Unrestricted Fallback]\n", "⚠️ [Unrestricted Fallback]"]:
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):]
+                start_idx = cleaned.find("{")
+                end_idx = cleaned.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    json_candidate = cleaned[start_idx:end_idx+1]
+                    try:
+                        import json
+                        parsed = json.loads(json_candidate)
+                        if isinstance(parsed, dict) and ("data" in parsed or "layout" in parsed):
+                            chart_json = json_candidate
+                    except Exception:
+                        pass
+
+        if status_callback:
+            status_callback("🔬 Extreme WebSearch Analysis complete!", "success", "deepseek_r1", 100)
+
+        # Build the final response
+        result = f"### 🔬 Deep Analysis Report\n\n{analysis}\n\n"
+        if chart_json:
+            result += f"### Interactive Analysis Charts\n<!--PLOTLY_JSON-->\n{chart_json}\n<!--/PLOTLY_JSON-->\n"
+        
+        self.memory.save(prompt, result[:3000])
+        return result
+
+    # =========================================================================
     # MAIN PIPELINE ENTRY POINT
     # =========================================================================
     def process_query(self, prompt, mode="auto", selected_models=None, status_callback=None):
@@ -2165,7 +2343,7 @@ class AgentOrchestrator:
             "crypto price", "stock price", "temperature in"
         ]
         prompt_lower = prompt.lower()
-        active_web_search = self.enable_web_search or any(kw in prompt_lower for kw in search_keywords)
+        active_web_search = (self.search_mode != "off") or any(kw in prompt_lower for kw in search_keywords)
 
         web_context = ""
         if active_web_search:
@@ -2398,20 +2576,19 @@ class AgentOrchestrator:
         logic_temp = 0.6  # High for creative logic problem solving
         gen_temp = 0.1    # Low for strict code writing
 
-        # ── Three-Way Classification ─────────────────────────────────────
+        # ── Six-Way Classification ────────────────────────────────────────
         router_llm = self._get_model("router", required_ctx=router_ctx)
-        if isinstance(mode, str) and mode.upper() in ["SIMPLE", "CODING", "REASONING"]:
+        if isinstance(mode, str) and mode.upper() in ["SIMPLE", "CODING", "REASONING", "PREDICTION", "EXTREME_WEBSEARCH"]:
             task_type = mode.upper()
         else:
             task_type = self._classify_task(router_llm, prompt)
             
+        # ── Search Mode Overrides ─────────────────────────────────────────
         if active_web_search and (not isinstance(mode, str) or mode.lower() == "auto"):
-            if is_predictive:
-                task_type = "CODING"
+            if self.search_mode == "prediction" or is_predictive:
+                task_type = "PREDICTION"
                 # Prediction tasks with web search produce massive enriched prompts.
                 # Ensure ds_ctx and oc_ctx are large enough to hold the scraped web data.
-                # CRITICAL: On P100 (16GB), ds_ctx_cap is only 4096-8192.
-                # Never exceed the GPU's actual VRAM ceiling to prevent OOM crashes.
                 prediction_min_ctx = min(8192, ds_ctx_cap)
                 if ds_ctx < prediction_min_ctx:
                     ds_ctx = prediction_min_ctx
@@ -2425,7 +2602,19 @@ class AgentOrchestrator:
                     gen_tokens = max(512, min_ctx - 1500)
                 if gen_tokens < 256:
                     gen_tokens = 256
-            else:
+            elif self.search_mode == "extreme":
+                task_type = "EXTREME_WEBSEARCH"
+                # Extreme mode expands context to absolute max for deep document analysis
+                ds_ctx = ds_ctx_cap
+                oc_ctx = oc_ctx_cap
+                min_ctx = min(ds_ctx, oc_ctx)
+                gen_tokens = int(min_ctx * 0.40)
+                gen_tokens = max(2048, min(8192, gen_tokens))
+                if min_ctx - gen_tokens < 1500:
+                    gen_tokens = max(512, min_ctx - 1500)
+                if gen_tokens < 256:
+                    gen_tokens = 256
+            elif task_type not in ["CODING", "REASONING"]:
                 task_type = "SIMPLE"
                 
         if status_callback:
@@ -2450,8 +2639,34 @@ class AgentOrchestrator:
             return self._clean_cutoff_notes(res)
 
         # ══════════════════════════════════════════════════════════════════
-        # PATH C: REASONING — Playground-Verified or LLM Debate
+        # PATH C: REASONING — VibeThinker/DeepSeek Logic + Playground Verification
         # ══════════════════════════════════════════════════════════════════
+        if task_type == "REASONING":
+            res = self._reasoning_pipeline(prompt, enriched_prompt, router_llm,
+                                            router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+            return self._clean_cutoff_notes(res)
+
+        # ══════════════════════════════════════════════════════════════════
+        # PATH D: PREDICTION — Dedicated ML/Data Science Pipeline
+        # ══════════════════════════════════════════════════════════════════
+        if task_type == "PREDICTION":
+            if status_callback:
+                status_callback("🔮 Prediction Pipeline activated...", "info", "system", 15)
+            res = self._prediction_pipeline(prompt, enriched_prompt, router_llm,
+                                             router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+            return self._clean_cutoff_notes(res)
+
+        # ══════════════════════════════════════════════════════════════════
+        # PATH E: EXTREME WEBSEARCH — Deep Analysis + Charts
+        # ══════════════════════════════════════════════════════════════════
+        if task_type == "EXTREME_WEBSEARCH":
+            if status_callback:
+                status_callback("🔬 Extreme WebSearch & Deep Analysis activated...", "info", "system", 15)
+            res = self._extreme_websearch_pipeline(prompt, enriched_prompt, router_llm,
+                                                    router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
+            return self._clean_cutoff_notes(res)
+
+        # Fallback — shouldn't reach here, but treat as SIMPLE
         res = self._reasoning_pipeline(prompt, enriched_prompt, router_llm,
                                         router_ctx, ds_ctx, oc_ctx, gen_tokens, gen_temp, status_callback)
         return self._clean_cutoff_notes(res)

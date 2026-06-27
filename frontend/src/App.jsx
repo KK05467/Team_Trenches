@@ -941,7 +941,10 @@ export default function App() {
   const currentLogsRef = useRef([]);
 
   // Settings
-  const [enableWebSearch, setEnableWebSearch] = useState(false);
+  const [searchMode, setSearchMode] = useState("off");  // off, simple, prediction, extreme
+  const searchModes = ["off", "simple", "prediction", "extreme"];
+  const searchModeLabels = { off: "Off", simple: "🌐 Search", prediction: "🔮 Predict", extreme: "🔬 Extreme" };
+  const searchModeColors = { off: "", simple: "#4fc3f7", prediction: "#ab47bc", extreme: "#ef5350" };
   const [contextLength, setContextLength] = useState(0);
   const [maxTokens, setMaxTokens] = useState(2048);
   const [temperature, setTemperature] = useState(0.7);
@@ -1126,7 +1129,7 @@ export default function App() {
           temperature,
           device_mode: deviceMode,
           gpu_layers: -1,
-          enable_web_search: enableWebSearch,
+          search_mode: searchMode,
         }),
       });
 
@@ -1410,12 +1413,39 @@ export default function App() {
                   <span className="popup-icon">📷</span> Upload photo or file
                 </button>
                 <div className="popup-divider" />
-                <div className="popup-item" style={{ cursor: "default" }}>
-                  <span className="popup-icon">🌐</span> Web search
-                  <div
-                    className={`toggle-switch ${enableWebSearch ? "on" : ""}`}
-                    onClick={(e) => { e.stopPropagation(); setEnableWebSearch(!enableWebSearch); }}
-                  />
+                <div className="popup-item" style={{ cursor: "default", flexDirection: "column", alignItems: "flex-start", gap: "6px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                    <span><span className="popup-icon">🌐</span> Web Search</span>
+                    <span style={{
+                      fontSize: "0.7rem",
+                      padding: "2px 8px",
+                      borderRadius: "10px",
+                      background: searchMode !== "off" ? `${searchModeColors[searchMode]}22` : "rgba(255,255,255,0.05)",
+                      color: searchMode !== "off" ? searchModeColors[searchMode] : "#888",
+                      border: `1px solid ${searchMode !== "off" ? searchModeColors[searchMode] + '44' : 'rgba(255,255,255,0.1)'}`,
+                      fontWeight: 600
+                    }}>{searchModeLabels[searchMode]}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: "4px", width: "100%" }}>
+                    {searchModes.map(m => (
+                      <button
+                        key={m}
+                        onClick={(e) => { e.stopPropagation(); setSearchMode(m); }}
+                        style={{
+                          flex: 1,
+                          padding: "4px 0",
+                          fontSize: "0.65rem",
+                          border: `1px solid ${searchMode === m ? (searchModeColors[m] || '#555') + 'aa' : 'rgba(255,255,255,0.08)'}`,
+                          borderRadius: "6px",
+                          background: searchMode === m ? (searchModeColors[m] || '#555') + '22' : 'rgba(255,255,255,0.03)',
+                          color: searchMode === m ? (searchModeColors[m] || '#ccc') : '#888',
+                          cursor: "pointer",
+                          fontWeight: searchMode === m ? 700 : 400,
+                          transition: "all 0.2s ease"
+                        }}
+                      >{searchModeLabels[m]}</button>
+                    ))}
+                  </div>
                 </div>
                 <div className="popup-divider" />
                 <button className="popup-item" onClick={() => { setSettingsOpen(true); setMenuOpen(false); }}>
@@ -1519,7 +1549,7 @@ export default function App() {
                 fetch(`${finalUrl}/api/settings`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ context_length: contextLength, max_tokens: maxTokens, temperature, device_mode: deviceMode, gpu_layers: -1, enable_web_search: enableWebSearch })
+                  body: JSON.stringify({ context_length: contextLength, max_tokens: maxTokens, temperature, device_mode: deviceMode, gpu_layers: -1, search_mode: searchMode })
                 }).catch(() => console.warn("Settings sync to backend deferred — will apply on next request."));
               }}>Save</button>
             </div>

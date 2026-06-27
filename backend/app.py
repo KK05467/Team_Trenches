@@ -62,7 +62,7 @@ class ChatRequest(BaseModel):
     image: Optional[str] = None
     device_mode: Optional[str] = None
     gpu_layers: Optional[int] = None
-    enable_web_search: bool = False
+    search_mode: str = "off"  # off, simple, prediction, extreme
 
 class SettingsRequest(BaseModel):
     context_length: int
@@ -70,7 +70,7 @@ class SettingsRequest(BaseModel):
     temperature: float
     device_mode: Optional[str] = "gpu"
     gpu_layers: Optional[int] = -1
-    enable_web_search: bool = False
+    search_mode: str = "off"  # off, simple, prediction, extreme
 
 def bg_download_task(model_key: str):
     global download_progress
@@ -130,7 +130,7 @@ def get_system_status():
             "temperature": orchestrator.temperature,
             "device_mode": orchestrator.device_mode,
             "gpu_layers": orchestrator.gpu_layers,
-            "enable_web_search": getattr(orchestrator, "enable_web_search", False)
+            "search_mode": getattr(orchestrator, "search_mode", "off")
         }
     }
 
@@ -160,7 +160,7 @@ def update_settings(settings: SettingsRequest):
         temperature=settings.temperature,
         device_mode=settings.device_mode,
         gpu_layers=settings.gpu_layers,
-        enable_web_search=settings.enable_web_search
+        search_mode=settings.search_mode
     )
     return {"status": "updated"}
 
@@ -245,7 +245,7 @@ async def chat(request: ChatRequest):
         temperature=request.temperature,
         device_mode=request.device_mode if request.device_mode else orchestrator.device_mode,
         gpu_layers=request.gpu_layers if request.gpu_layers is not None else orchestrator.gpu_layers,
-        enable_web_search=request.enable_web_search
+        search_mode=request.search_mode
     )
     
     # 2. Check if required models are downloaded
@@ -256,6 +256,11 @@ async def chat(request: ChatRequest):
         needed_models += ["qwen_vl"]
         
     needed_models += ["router", "deepseek_r1", "opencode"]
+    
+    # VibeThinker is optional — only require it if downloaded
+    from backend.downloader import is_model_downloaded
+    if is_model_downloaded("vibethinker"):
+        needed_models.append("vibethinker")
         
     missing_models = [MODEL_DEFINITIONS[m]["name"] for m in needed_models if not models_status.get(m, {}).get("downloaded", False)]
     

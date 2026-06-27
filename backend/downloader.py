@@ -35,6 +35,12 @@ MODEL_DEFINITIONS = {
         'filename': 'OpenCodeInterpreter-DS-6.7B.Q6_K.gguf',
         'name': 'OpenCodeInterpreter 6.7B (3D Visualization Layer)',
         'type': 'text',
+    },
+    'vibethinker': {
+        'repo_id': 'prithivMLmods/VibeThinker-3B-GGUF',
+        'filename': 'VibeThinker-3B.Q6_K.gguf',
+        'name': 'VibeThinker 3B (Math/Logic Engine)',
+        'type': 'text',
     }
 }
 
