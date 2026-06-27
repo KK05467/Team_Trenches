@@ -20,6 +20,10 @@ DeepThinker is a **production-grade, fully local multi-agent AI system** designe
 
 At startup, the system auto-calibrates to the available compute environment (CUDA, Intel XPU/SYCL, or CPU), scaling context windows, batch sizes, scraping depth, memory thresholds, and execution configurations dynamically.
 
+> [!CAUTION]
+> ### ⚠️ Experimental Status
+> This project was developed as a submission for the **India Agentic AI Open Hackathon 2026**. The dual-sandbox architecture, Reflexion loops, and Dynamic Memory Allocator (DMA) push consumer hardware to its absolute limits.
+
 ---
 
 ## 🚀 Key Highlights & Achievements
@@ -67,6 +71,10 @@ Web Search    Execution       Sandbox         Data Cleaning    OpenCodeDS     Re
                          (Answer + Code + 3D Visual)
 ```
 
+<p align="center">
+  <img src="assets/architecture_diagram.png" alt="DeepThinker Multi-Agent Pipeline Architecture" width="800"/>
+</p>
+
 ### Routing Pathways
 
 1. **SIMPLE:** Fast, direct answers utilizing Phi-3.5-Mini. Best for general conversations and basic tasks.
@@ -109,6 +117,10 @@ Executes generated code safely inside a 3-tier isolated environment:
 * **Languages Supported:** Python, C, C++, Java, JavaScript, Go, Rust, Bash, TypeScript.
 * **Libraries Pre-Whitelisted:** `numpy`, `scipy`, `pandas`, `sklearn`, `plotly`, `sympy`, `networkx`, `z3-solver`.
 * **Reflexion Loop:** Code syntax or runtime errors automatically spawn self-correction loops to repair the code before outputting results.
+
+<p align="center">
+  <img src="assets/coding_pipeline_architecture.png" alt="Dual Sandbox Coding & Reflexion Architecture" width="800"/>
+</p>
 
 ---
 
