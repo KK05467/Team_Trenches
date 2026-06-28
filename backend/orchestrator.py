@@ -3165,16 +3165,20 @@ class AgentOrchestrator:
         for reset in range(max_resets):
             max_rounds = 2 if reset == 0 else 1
             for rnd in range(max_rounds):
-                # ── Phase 1: DeepSeek Logic Plan ─────────────────────────────
+                # ── Phase 1: Logic Plan ─────────────────────────────
+                is_nuclear = (reset > 0)
+                model_key = "deepseek_r1" if is_nuclear else "vibethinker"
+                model_name = "DeepSeek-R1" if is_nuclear else "VibeThinker"
+                
                 if status_callback:
                     lbl = (
-                        f"Nuclear Reset #{reset} (Attempt {rnd+1}/{max_rounds}): DeepSeek-R1 drafting logic..."
+                        f"Nuclear Reset #{reset} (Attempt {rnd+1}/{max_rounds}): {model_name} drafting logic..."
                         if reset else
-                        f"DeepSeek-R1 drafting logic (Attempt {rnd+1}/{max_rounds})..."
+                        f"{model_name} drafting logic (Attempt {rnd+1}/{max_rounds})..."
                     )
-                    status_callback(lbl, "info" if not reset else "warning", "deepseek_r1", 20 + rnd*10)
+                    status_callback(lbl, "info" if not reset else "warning", model_key, 20 + rnd*10)
 
-                ds_llm = self._get_model("deepseek_r1", required_ctx=ds_ctx)
+                ds_llm = self._get_model(model_key, required_ctx=ds_ctx)
                 plan_p = f"Create a step-by-step logic plan:\n{ds_safe}"
                 if lessons:
                     plan_p += f"\n\nLESSONS FROM PREVIOUS FAILURES:\n{lessons[:800]}"
@@ -3190,8 +3194,8 @@ class AgentOrchestrator:
                 pg_out = ""
                 if use_logic_playground:
                     if status_callback:
-                        status_callback(f"Reasoning Sandbox: Verifying logic (Attempt {rnd+1}/{max_rounds})...", "info", "deepseek_r1", 30 + rnd*10)
-                    verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key="deepseek_r1", original_prompt=prompt)
+                        status_callback(f"Reasoning Sandbox: Verifying logic (Attempt {rnd+1}/{max_rounds})...", "info", model_key, 30 + rnd*10)
+                    verified, pg_out, _ = self._run_playground(ds_llm, ds_draft, "logic", model_key=model_key, original_prompt=prompt)
 
                 if not verified:
                     if status_callback:
@@ -3239,7 +3243,7 @@ class AgentOrchestrator:
                         status_callback("DeepSeek-R1 corrected the logic plan with search context.", "success", "deepseek_r1", 40 + rnd*10)
                 else:
                     if status_callback:
-                        status_callback("Logic plan VERIFIED!", "success", "deepseek_r1", 40 + rnd*10)
+                        status_callback("Logic plan VERIFIED!", "success", model_key, 40 + rnd*10)
 
                 compiled_plan = ds_draft
 
