@@ -150,10 +150,17 @@ flowchart TD
     PATH_PREDICT --> P_VRAM["Expand VRAM Context Limits"]
     P_VRAM --> P_SPEC["OpenCodeInterpreter 7B: ML/Data Science Specialization Prompt"]
     P_SPEC --> P_DRAFT["Draft Pandas/Scikit-learn Regression Script"]
-    P_DRAFT --> P_SB{"Sandbox Execution: Load Web Scraped Arrays"}
+    
+    P_DRAFT -->|Empty / Failed Draft| P_DS_FALLBACK["DeepSeek R1-7B Fallback Draft"]
+    P_DRAFT -->|Successful Draft| P_SB{"Sandbox Execution"}
+    P_DS_FALLBACK --> P_SB
     
     P_SB -->|Verified Success| P_PASS["Parse 'PREDICTIVE_METRICS' JSON & Render Forecast UI"]
-    P_SB -->|Data Format Error/NaN| P_CLEAN["Data Cleaning Loop: OpenCode fixes array shapes"]
+    P_SB -->|Partial Success| P_BEST_EFFORT["Return Best-Effort Text Results"]
+    P_SB -->|Runtime / Syntax Error| P_IDE_PATCH["Agent IDE: Surgical Search/Replace Patch"]
+    
+    P_IDE_PATCH -->|Patch Success| P_PASS
+    P_IDE_PATCH -->|Patch Failed| P_CLEAN["Data Cleaning Loop: OpenCode full rewrite"]
     P_CLEAN --> P_SB
 
     %% ── 5. 3D VIZ PATHWAY ──
@@ -174,7 +181,7 @@ flowchart TD
     EXT_SB -->|Success| EXT_PASS["Output Deep Analysis Report + Interactive Charts"]
 
     %% ── FINAL RENDERING TERMINUS ──
-    SIMPLE_ANS & REASON_PASS & CODE_PASS & P_PASS & VIZ_PASS & EXT_PASS --> RENDER_UI["💻 React Frontend UI / Chat Output"]
+    SIMPLE_ANS & REASON_PASS & CODE_PASS & P_PASS & P_BEST_EFFORT & VIZ_PASS & EXT_PASS --> RENDER_UI["💻 React Frontend UI / Chat Output"]
 
     %% ── STYLING ──
     classDef default fill:#1E1E1E,stroke:#4A4A4A,stroke-width:2px,color:#FFF;
