@@ -562,11 +562,6 @@ class AgentOrchestrator:
                 print(f"Warning: close() failed for '{name or 'model'}': {e}")
 
         # Explicitly set internal pointers to None to break reference cycles and release ctypes memory
-        if hasattr(model_obj, '_stack'):
-            try:
-                model_obj._stack = None
-            except Exception:
-                pass
         if hasattr(model_obj, 'ctx'):
             try:
                 model_obj.ctx = None
