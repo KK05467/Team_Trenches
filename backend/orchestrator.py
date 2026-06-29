@@ -545,11 +545,52 @@ class AgentOrchestrator:
                         print(f"🧹 Closed chat handler exit_stack for '{name}'")
                 except Exception as e:
                     print(f"Warning: Failed to close chat handler exit_stack for '{name or 'model'}': {e}")
+            # Break references on the chat_handler itself
+            if hasattr(chat_handler, "mtmd_ctx"):
+                chat_handler.mtmd_ctx = None
+            if hasattr(chat_handler, "_exit_stack"):
+                chat_handler._exit_stack = None
+            try:
+                model_obj.chat_handler = None
+            except Exception:
+                pass
+
         if hasattr(model_obj, 'close'):
             try:
                 model_obj.close()
             except Exception as e:
                 print(f"Warning: close() failed for '{name or 'model'}': {e}")
+
+        # Explicitly set internal pointers to None to break reference cycles and release ctypes memory
+        if hasattr(model_obj, '_stack'):
+            try:
+                model_obj._stack = None
+            except Exception:
+                pass
+        if hasattr(model_obj, 'ctx'):
+            try:
+                model_obj.ctx = None
+            except Exception:
+                pass
+        if hasattr(model_obj, 'model'):
+            try:
+                model_obj.model = None
+            except Exception:
+                pass
+
+        # Trigger garbage collection and empty caches immediately
+        gc.collect()
+        if torch:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
+            except Exception:
+                pass
 
     def unload_all_models(self):
         """Nuclear option: deterministically unload every cached model."""
