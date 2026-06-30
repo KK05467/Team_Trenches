@@ -141,7 +141,8 @@ flowchart TD
     DS_THEORY --> REASON_PASS
 
     %% ── 3. CODING PATHWAY ──
-    PATH_CODING --> OC_DRAFT["OpenCodeInterpreter 7B: Draft Python/JS Script"]
+    PATH_CODING --> VT_PLAN["VibeThinker 3B: Draft Step-by-Step Logic Plan"]
+    VT_PLAN --> OC_DRAFT["OpenCodeInterpreter 7B: Draft Python/JS Script"]
     OC_DRAFT --> CODING_SB{"Execution Sandbox"}
     
     CODING_SB -->|Verified Success| CODE_PASS["Output final Verified Code Block"]
