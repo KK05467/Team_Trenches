@@ -2641,8 +2641,9 @@ class AgentOrchestrator:
             "crypto price", "stock price", "temperature in"
         ]
         prompt_lower = prompt.lower()
-        active_web_search = (self.search_mode != "off")
-
+        current_mode = str(getattr(self, 'search_mode', 'off')).strip().lower()
+        active_web_search = (current_mode not in ["off", "false", "none", ""])
+        
         web_context = ""
         if active_web_search:
             if status_callback:
@@ -3745,7 +3746,8 @@ class AgentOrchestrator:
 
                     # Fetch quick helper web search context to resolve unknown concepts immediately
                     helper_search_context = ""
-                    if self.search_mode != "off":
+                    current_search_mode = str(getattr(self, 'search_mode', 'off')).strip().lower()
+                    if current_search_mode not in ["off", "false", "none", ""]:
                         try:
                             router_llm = self._get_model("router", required_ctx=1024)
                             search_opt_p = (
